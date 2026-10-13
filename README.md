@@ -1,0 +1,2 @@
+# SpoonManagerBot
+Spoonにおけるマネージャーのボット機能を作成するためのリポジトリ
