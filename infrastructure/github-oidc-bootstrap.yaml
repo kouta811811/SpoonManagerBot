@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Bootstrap for GitHub Actions OIDC deployment of SpoonManagerBot.
+  Creates the OIDC identity provider (optional) and a deploy role that
+  GitHub Actions assumes with short-lived credentials. No long-lived keys.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: spoon-manager-bot
+    AllowedPattern: '^[a-z][a-z0-9-]{2,30}$'
+  GitHubOwner:
+    Type: String
+    Default: kouta811811
+    Description: GitHub organization or user that owns the repository.
+  GitHubRepo:
+    Type: String
+    Default: SpoonManagerBot
+    Description: Repository name without the owner prefix.
+  DeployBranch:
+    Type: String
+    Default: main
+    Description: Branch allowed to run the deploy workflow.
+  GitHubEnvironment:
+    Type: String
+    Default: dev
+    Description: GitHub Actions environment allowed to assume the role.
+  CreateOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >-
+      Set to false if the GitHub OIDC provider already exists in this account.
+  ExistingOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Required when CreateOidcProvider is false. ARN of the existing
+      token.actions.githubusercontent.com provider.
+
+Conditions:
+  ShouldCreateOidcProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-github-deploy'
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Ref ExistingOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${GitHubEnvironment}'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  DeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${ProjectName}-github-deploy'
+      Roles:
+        - !Ref DeployRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CloudFormationFoundationStack
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStackResources
+              - cloudformation:GetTemplate
+              - cloudformation:ValidateTemplate
+              - cloudformation:CreateChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:ListStackResources
+              - cloudformation:GetTemplateSummary
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/${ProjectName}-*/*'
+          - Sid: ValidateTemplates
+            Effect: Allow
+            Action:
+              - cloudformation:ValidateTemplate
+            Resource: '*'
+          - Sid: NetworkResources
+            Effect: Allow
+            Action:
+              - ec2:CreateVpc
+              - ec2:DeleteVpc
+              - ec2:ModifyVpcAttribute
+              - ec2:CreateSubnet
+              - ec2:DeleteSubnet
+              - ec2:ModifySubnetAttribute
+              - ec2:CreateInternetGateway
+              - ec2:DeleteInternetGateway
+              - ec2:AttachInternetGateway
+              - ec2:DetachInternetGateway
+              - ec2:CreateRouteTable
+              - ec2:DeleteRouteTable
+              - ec2:CreateRoute
+              - ec2:DeleteRoute
+              - ec2:AssociateRouteTable
+              - ec2:DisassociateRouteTable
+              - ec2:CreateSecurityGroup
+              - ec2:DeleteSecurityGroup
+              - ec2:AuthorizeSecurityGroupEgress
+              - ec2:RevokeSecurityGroupEgress
+              - ec2:CreateTags
+              - ec2:DeleteTags
+              - ec2:Describe*
+            Resource: '*'
+          - Sid: StateAndLogs
+            Effect: Allow
+            Action:
+              - dynamodb:CreateTable
+              - dynamodb:DeleteTable
+              - dynamodb:DescribeTable
+              - dynamodb:DescribeTimeToLive
+              - dynamodb:UpdateTimeToLive
+              - dynamodb:UpdateTable
+              - dynamodb:TagResource
+              - dynamodb:UntagResource
+              - dynamodb:ListTagsOfResource
+              - logs:CreateLogGroup
+              - logs:DeleteLogGroup
+              - logs:DescribeLogGroups
+              - logs:PutRetentionPolicy
+              - logs:TagResource
+              - logs:ListTagsForResource
+            Resource: '*'
+          - Sid: EcsCluster
+            Effect: Allow
+            Action:
+              - ecs:CreateCluster
+              - ecs:DeleteCluster
+              - ecs:DescribeClusters
+              - ecs:TagResource
+              - ecs:UntagResource
+              - ecs:PutClusterCapacityProviders
+            Resource: '*'
+          - Sid: ManageScopedRoles
+            Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:GetRolePolicy
+              - iam:ListRolePolicies
+              - iam:ListAttachedRolePolicies
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectName}-*'
+      Description: >-
+        Scoped deploy permissions for the SpoonManagerBot foundation stack.
+        Does not grant ecs:RunTask or secret value access.

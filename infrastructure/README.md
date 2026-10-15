@@ -63,3 +63,41 @@ aws cloudformation delete-stack \
 ```
 
 No secrets are accepted as CloudFormation parameters. OAuth secret values will be inserted separately under `/spoon-manager-bot/dev/` after the official contract and application registration are ready.
+
+## GitHub Actions OIDC deployment
+
+The intended deployment path is GitHub Actions using OIDC short-lived credentials, not long-lived AWS keys and not local Kiro execution.
+
+### One-time bootstrap
+
+`github-oidc-bootstrap.yaml` creates the GitHub OIDC provider (optional) and the scoped deploy role GitHub Actions assumes. Run it once with an administrator identity in the target account:
+
+```bash
+aws cloudformation deploy \
+  --region ap-northeast-1 \
+  --stack-name spoon-manager-bot-github-oidc \
+  --template-file infrastructure/github-oidc-bootstrap.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    GitHubOwner=kouta811811 \
+    GitHubRepo=SpoonManagerBot \
+    DeployBranch=main \
+    GitHubEnvironment=dev \
+    CreateOidcProvider=true
+```
+
+If the account already has a `token.actions.githubusercontent.com` provider, set `CreateOidcProvider=false` and pass `ExistingOidcProviderArn`.
+
+The role trust is restricted to the `dev` GitHub Actions environment of this repository. The deploy policy is scoped to `spoon-manager-bot-*` stacks and resources and intentionally excludes `ecs:RunTask` and secret value access.
+
+### Required GitHub configuration
+
+Create a GitHub Actions environment named `dev` (ideally with required reviewers) and set:
+
+- Secret `AWS_DEPLOY_ROLE_ARN`: ARN of the `spoon-manager-bot-github-deploy` role (bootstrap output).
+- Secret `AWS_ACCOUNT_ID`: the 12-digit target account id, verified by the workflow before deploying.
+
+### Workflows
+
+- `.github/workflows/ci.yml` runs on pull requests: cfn-lint, deploy-script syntax, and guardrail checks. It never touches AWS.
+- `.github/workflows/deploy-dev.yml` runs on push to `main` (foundation changes) or manual dispatch. It assumes the OIDC role, confirms the account, validates the template, and deploys the `dev` foundation. It creates no Fargate task and no production resources.
