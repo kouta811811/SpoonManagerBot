@@ -281,6 +281,8 @@ class SpoonRegionConfig:
 - NAT Gateway、ALB、ECR private storage、Secrets Manager、RDSを避ける。
 - 課金対象は主にFargate vCPU/memory、Task用public IPv4、ログ、少量のAPI Gateway/Lambda/DynamoDBとなる。
 - 実装前に東京regionの最新単価と想定配信時間で見積り、AWS Budgetsを設定する。
+- 現行概算はTask + public IPv4で `$0.0173225/時間`。標準80時間/月ではTask費 `$1.39`、周辺費と10%余裕を含む予算目安 `$1.80/月` とする。
+- 詳細な前提、時間別試算、上限策は [`docs/fargate-cost-estimate.md`](../../../docs/fargate-cost-estimate.md) を正とする。
 
 ## 15. テスト戦略
 
