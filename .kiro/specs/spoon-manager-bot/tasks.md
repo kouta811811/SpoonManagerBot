@@ -1,211 +1,219 @@
 # SPOON配信マネージャーBot 実装計画
 
-> 本ファイルは実装順序と要件トレーサビリティを定義する。現時点ではスペック作成のみであり、以下の実装タスクは未着手とする。`P0` ゲートを解消するまでアプリケーションリソースを作成しない。
+> Spoon公式のSSE方式へ改訂済み。現時点ではspec更新のみで、アプリコード・AWSリソースは未実装。フェーズ0完了前に本番SSEへ接続しない。
 
-## フェーズ0: 仕様確定・審査準備（実装前ゲート）
+## フェーズ0: 公式契約の確定
 
-- [ ] 0.1 Spoon公式APIドキュメントを入手し、Webhook契約を確定する
-  - イベント名、JSON Schema、サンプル、署名ヘッダー、署名対象bytes、base64、時刻検証、再送条件を記録する。
-  - 入力資料の `live.join/comment/gift/end` と `X-Signature` が実仕様に存在するか検証する。
-  - 成果物: `docs/spoon-webhook-contract.md` と検証済みfixture。
-  - 対応要件: R1, R2, R3, R4
+- [ ] 0.1 Developer App/Bot Accountを準備する
+  - DJとは別のBot Accountを作成し、命名規則に適合するDeveloper Appを登録する。
+  - app/Bot/DJの地域と日本向けbase URLを確認する。
+  - 対応: R1, R9
 
-- [ ] 0.2 OAuth 2.0/Open APIの公式パラメータを確定する
-  - 採用済みのOAuth 2.0認可コードフローについて、認可/トークン/失効URL、redirect URI、PKCE対応、state、スコープ、更新方式、チャット送信API、タイムアウト、レート制限、Retry-Afterの具体値を確認する。
-  - MVPは単一HOST、トークン保存はSSM Standard Tier SecureStringとする。
-  - 成果物: `docs/spoon-oauth-api-contract.md`。
-  - 対応要件: R7, R8, R11
+- [ ] 0.2 OAuth契約を記録する
+  - authorization/token/refresh/revoke URL、redirect規則、PKCE、TTL、エラーを記録する。
+  - 1 token = 1 DJをfixtureと契約テストへ反映する。
+  - 対応: R2
 
-- [ ] 0.3 MVPコマンドカタログを承認する
-  - `help`, `song`, `dice` およびHOST/MANAGER運営コマンドの名前、引数、応答、クールダウン、許可ロールを表にする。
-  - `song` の意味、曲キュー状態遷移、MANAGER登録・解除方法を確定する。
-  - ウェルカム/ギフトお礼の文面、頻度、集計項目を確定する。
-  - 成果物: `docs/command-catalog.md`、ADR-006更新。
-  - 対応要件: R4, R5, R6, R9
+- [ ] 0.3 最小権限セットを確定する
+  - 11権限からchat/join/heart/donation受信とchat送信に必要なものだけを選ぶ。
+  - Developer App登録値とDJ同意要求を一致させる。
+  - 対応: R1, R4, R7
 
-- [ ] 0.4 採用済みの失敗・冪等性方式を公式再送仕様と照合する
-  - `PROCESSING/SUCCEEDED/RETRYABLE_FAILED` + leaseの状態機械がSpoonの再送条件と整合することを確認する。
-  - Open API送信はLambda内の同期・best-effortとし、SQS/outboxを追加しない前提で10秒の実行時間予算を確定する。
-  - 成果物: 公式再送条件を反映したシーケンス図とタイムアウト表。
-  - 対応要件: R3, R8, NFR1, NFR2
+- [ ] 0.4 SSE契約を記録する
+  - `GET /v1/live/events` のheaders、status、event名、5 payload、event ID、heartbeat、接続上限を記録する。
+  - reconnect、retry、resume、順序、重複、同時接続、live endの規則を確認する。
+  - error bodyのSSE形式もfixture化する。
+  - 対応: R4, R5, R8
 
-- [ ] 0.5 規約・データ保護・運用承認チェックリストを完成する
-  - Spoonへの提出情報（機能、API、スコープ、保存場所、期間、削除、第三者処理、秘密管理）を整理する。
-  - 24時間保持、リスナー告知、API利用表示、事故通知、契約終了時削除を承認する。
-  - 文書日付 `2026/10/14` の妥当性を確認する。
-  - 成果物: `docs/compliance-checklist.md`。
-  - 対応要件: R9, R10, R11, R12
+- [ ] 0.5 Chat API契約を記録する
+  - `POST /v1/live/chat` のschema、文字制限、rate limit、Retry-After、再試行安全性を確認する。
+  - Bot投稿のSSE echoと自己識別方法を確認する。
+  - 対応: R5, R7
 
-## フェーズ1: プロジェクト基盤
+- [ ] 0.6 ユーザー機能仕様を承認する
+  - command catalog、ロール、MANAGER設定、welcome/heart/donation応答を確定する。
+  - 対応: R6, R8
 
-- [ ] 1.1 Python 3.12プロジェクトのスケルトンを作成する
-  - `src/` のパッケージ、依存定義、開発ツール設定を作る。
-  - 外部I/OをProtocolで差し替え可能にする。
-  - 対応要件: NFR6
-  - 依存: 0.1〜0.5
+- [ ] 0.7 コスト見積りと運用手順を承認する
+  - 東京regionのFargate 0.25vCPU/0.5GB、public IPv4、ログ等を配信時間別に見積る。
+  - AWS Budgets、起動/停止責任者、異常終了時対応を確定する。
+  - 対応: R3, R11, R12, NFR4
 
-- [ ] 1.2 固定費のないAWS SAMテンプレートを作成する
-  - HTTP API、単一Lambda arm64/256MB/10秒、単一DynamoDB On-Demand/TTL、SSM Standard SecureString参照、7日保持ログを定義する。
-  - `POST /webhook`、`GET /oauth/callback`、AWS認証済みOPERATOR向け `scripts/start_oauth.py` と、dev/prodパラメータ、最小権限IAMを定義する。
-  - NAT Gateway、Secrets Manager、SQS、カスタマー管理KMS鍵を追加しない。
-  - 対応要件: R1, R7, R9, R10, R11, NFR1〜NFR5
+## フェーズ1: プロジェクト・IaC基盤
 
-- [ ] 1.3 CI検証パイプラインを作成する
-  - lint、型検査、pytest、SAM validate、秘密検知、依存脆弱性スキャンを実行する。
-  - この段階では本番デプロイを有効化しない。
-  - 対応要件: R11, NFR4, NFR6
+- [ ] 1.1 Python 3.12プロジェクトを作成する
+  - Lambda entrypoint、Worker、domain、Spoon adapters、repositoriesを分離する。
+  - 対応: NFR5
 
-## フェーズ2: Webhookセキュリティ境界
+- [ ] 1.2 コンテナを作成する
+  - Linux/ARM64、non-root、read-only filesystem、digest固定可能なimageを作る。
+  - credentialをimageへ含めない。
+  - 対応: R3, NFR3
 
-- [ ] 2.1 API Gatewayイベントアダプターを実装する
-  - HTTP API v2、ヘッダー正規化、base64本文、JSONレスポンスを実装する。
-  - 対応要件: R1
+- [ ] 1.3 SAM/CloudFormationを作成する
+  - OAuth callback HTTP API/Lambda、Control Lambda、ECS cluster/task definition、public subnet/IGW、DynamoDB、SSM権限、7日ログを定義する。
+  - ECS Service、NAT Gateway、ALB、inbound ruleを作らない。
+  - 対応: R2, R3, R12, NFR3, NFR4
 
-- [ ] 2.2 SSMシークレットプロバイダーと署名検証を実装する
-  - 公式仕様のアルゴリズム、raw bytes、定時間比較、期限付きキャッシュを実装する。
-  - 対応要件: R2, R10
+- [ ] 1.4 CIを作成する
+  - lint、type、pytest、SAM validate、container/secret/dependency scanを実行する。
+  - main反映だけではFargate Taskを起動しない。
+  - 対応: R12, NFR5
 
-- [ ] 2.3 イベントスキーマ検証を実装する
-  - 共通・種別固有モデル、400マッピング、生payload非保存を実装する。
-  - 対応要件: R3, R4, R9
+## フェーズ2: OAuth・地域・秘密管理
 
-- [ ] 2.4 セキュリティ境界の自動テストを作成する
-  - 正常/不正/欠落署名、大小文字、base64、JSON不正、必須項目不足を検証する。
-  - 対応要件: R1, R2, R3
+- [ ] 2.1 OAuth開始スクリプトとcallbackを実装する
+  - state一回利用、TTL、対応時PKCE、error callbackを実装する。
+  - 対応: R2
 
-## フェーズ3: 状態管理と冪等性
+- [ ] 2.2 Token Storeを実装する
+  - SSM Standard SecureStringへclient/access/refresh tokenを分離保存する。
+  - refresh lock、更新、revoke、削除を実装する。
+  - 対応: R2, R10
 
-- [ ] 3.1 DynamoDBリポジトリを実装する
-  - イベントclaim、セッション、manager、cooldown、TTLのアクセスを実装する。
-  - 期限切れデータを論理的に除外する。
-  - 対応要件: R3, R6, R8, R9
+- [ ] 2.3 Spoon Region Resolverを実装する
+  - 公式base URL表、app/DJ region検証、host allowlist、redirect拒否を実装する。
+  - 対応: R1, NFR3
 
-- [ ] 3.2 選択した冪等性状態遷移を実装する
-  - 条件付き書込みまたはトランザクションで並行処理時の高々1回実行を保証する。
-  - 対応要件: R3
-  - 依存: 0.4
+- [ ] 2.4 OAuth/regionの自動テストを作成する
+  - invalid/reused/expired state、refresh競合、revoke、region mismatch、host injectionを検証する。
+  - 対応: R1, R2
 
-- [ ] 3.3 クールダウンを原子的に実装する
-  - インメモリではなくDynamoDBで同一scopeの5秒制御を行う。
-  - 対応要件: R8, NFR3
+## フェーズ3: 起動制御とFargate Worker
 
-- [ ] 3.4 状態管理の自動テストを作成する
-  - 並行claim、重複、TTL、期限切れ除外、クールダウン境界を検証する。
-  - 対応要件: R3, R8, R9
+- [ ] 3.1 Control Lambdaを実装する
+  - IAM認証済みstart/stop、DynamoDB lease、RunTask/StopTaskを実装する。
+  - 対応: R3
 
-## フェーズ4: イベント処理とコマンド
+- [ ] 3.2 Worker lifecycleを実装する
+  - 起動検証、lease heartbeat、graceful shutdown、exit code、TTL処理を実装する。
+  - 対応: R3, R10, R11
 
-- [ ] 4.1 ディスパッチャーを実装する
-  - 4種の正式イベントと未知イベントの安全な無視を実装する。
-  - 対応要件: R4
+- [ ] 3.3 lifecycleの自動テストを作成する
+  - 二重起動、stale lease、配信なし、stop、異常終了、権限不足を検証する。
+  - 対応: R3
 
-- [ ] 4.2 ロール判定とコマンドレジストリを実装する
-  - HOST/MANAGER/LISTENER、最小権限フォールバック、許可集合を実装する。
-  - 対応要件: R5, R6
-  - 依存: 0.3
+## フェーズ4: SSEクライアント
 
-- [ ] 4.3 コメントハンドラーとMVPコマンドを実装する
-  - `!`/`/`解析、引数検証、権限不足時の沈黙、承認済みコマンドを実装する。
-  - 対応要件: R5, R6, R8
+- [ ] 4.1 streaming HTTP clientを実装する
+  - `GET /v1/live/events`、Bearer/Accept header、status/content-type、timeoutを実装する。
+  - 対応: R4
 
-- [ ] 4.4 入室・ギフト・配信終了ハンドラーを実装する
-  - 承認済み頻度/文面、非個人別集計、セッションクローズを実装する。
-  - 対応要件: R4, R9
+- [ ] 4.2 SSE parserを実装する
+  - chunk境界、CRLF/LF、複数data、id/event/retry、comment、heartbeat、上限を実装する。
+  - 対応: R4, R5
 
-- [ ] 4.5 ハンドラーと権限制御の自動テストを作成する
-  - 全コマンド×全ロール、引数境界、未知イベント、終了処理を検証する。
-  - 対応要件: R4, R5, R6
+- [ ] 4.3 再接続状態機械を実装する
+  - 401 refresh-once、403 stop、429 Retry-After、5xx/切断full-jitter、resumeを実装する。
+  - 対応: R4
 
-## フェーズ5: OAuthとSpoon API連携
+- [ ] 4.4 SSE parser/reconnectの自動テストを作成する
+  - 公式fixture、fragmentation、malformed、oversize、全status、長時間mock streamを検証する。
+  - 対応: R4, R5
 
-- [ ] 5.1 単一HOST向けOAuth 2.0認可・トークン管理を実装する
-  - AWS認証済みOPERATOR用 `scripts/start_oauth.py` と公開 `/oauth/callback` を実装する。
-  - stateのTTL/一回利用、公式対応時のPKCE、最小スコープを実装し、OAuth開始用の公開エンドポイントは作らない。
-  - client secret/access token/refresh tokenをSSM Standard Tier SecureStringへ分離保存し、更新、同時refreshロック、失効、削除を実装する。
-  - 対応要件: R7, R9, R10
-  - 依存: 0.2
+## フェーズ5: イベント・コマンド・状態
 
-- [ ] 5.2 Spoon APIクライアントを実装する
-  - 許可URL、Bearer認証、総タイムアウト、応答検証、秘密マスキングを実装する。
-  - 対応要件: R7, R8, R10
+- [ ] 5.1 公式event modelとdispatcherを実装する
+  - chat/join/heart/donationと5番目のevent、未知eventを実装する。
+  - 対応: R5, R8
 
-- [ ] 5.3 レート制限・再試行を実装する
-  - Retry-After、ジッター付き指数バックオフ、初回+最大2回、残り時間打切りを実装する。
-  - 対応要件: R8, NFR2
+- [ ] 5.2 重複抑止/checkpointを実装する
+  - 公式event ID/resume保証に従ってDynamoDB条件付き処理を行う。
+  - 対応: R4, R5, R10
 
-- [ ] 5.4 OAuth/APIクライアントの自動テストを作成する
-  - 200/400/401/403/429/5xx/timeout、更新・失効、ログ漏洩なしを検証する。
-  - 対応要件: R7, R8, R10
+- [ ] 5.3 自己投稿除外を実装する
+  - Bot chatとlistener noticeがstreamへ戻ってもcommand loopを起こさない。
+  - 対応: R5, R9
 
-## フェーズ6: 可観測性・削除・運用
+- [ ] 5.4 command registry/RBACを実装する
+  - `!`/`/`、引数検証、HOST/MANAGER/LISTENER許可集合を実装する。
+  - 対応: R6
 
-- [ ] 6.1 構造化ログとメトリクスを実装する
-  - allowlistログ、IDハッシュ、レイテンシ、カスタムメトリクスを実装する。
-  - raw payload、コメント、ニックネーム、識別子、token/secretが出ないことを検証する。
-  - 対応要件: R10
+- [ ] 5.5 join/heart/donation handlerを実装する
+  - 承認済み頻度、文面、非個人別集計を実装する。
+  - 対応: R8, R10
 
-- [ ] 6.2 無料枠優先の監視と予算通知を実装する
-  - Lambda/API Gateway/DynamoDBのAWS標準メトリクスと無料枠内アラームを優先する。
-  - 有料カスタムメトリクスを作成せず、署名失敗や429等は構造化ログで調査可能にする。
-  - AWS Budgetsで少額の上限通知を設定する。
-  - 対応要件: R10, NFR1, NFR5
+- [ ] 5.6 event/commandの自動テストを作成する
+  - 公式event fixture、未知event、重複、自己投稿、全command×roleを検証する。
+  - 対応: R5, R6, R8
 
-- [ ] 6.3 データ削除機能とランブックを実装する
-  - TTLに加え、セッション/アプリ/契約終了時の明示削除を用意する。
-  - トークンローテーション、事故対応、API緊急停止の手順を作る。
-  - 対応要件: R9, R10
+## フェーズ6: Chat API
 
-- [ ] 6.4 利用表示・告知の適合性を確認する
-  - Spoonの告知を妨げず、指定されたAPI利用表示と非公式表示を適用する。
-  - 対応要件: R12
+- [ ] 6.1 `POST /v1/live/chat` clientを実装する
+  - 同一DJ token/region、schema、timeout、応答検証を実装する。
+  - 対応: R7
 
-## フェーズ7: デプロイと受入
+- [ ] 6.2 cooldown/rate limitを実装する
+  - DynamoDBの原子的5秒cooldownと公式limitを適用する。
+  - 429/Retry-Afterと安全な場合だけの限定再試行を実装する。
+  - 対応: R7
 
-- [ ] 7.1 GitHub Actions OIDCデプロイを実装する
-  - リポジトリ・ブランチ・環境条件付きtrust、短期STS、最小権限を設定する。
-  - 対応要件: R11
+- [ ] 6.3 Chat APIの自動テストを作成する
+  - 200/400/401/403/429/5xx/timeout、自己echo、ログ漏洩なしを検証する。
+  - 対応: R5, R7, R11
 
-- [ ] 7.2 dev環境の統合・契約・負荷テストを実施する
-  - Spoon公式fixture、Webhook→DynamoDB→Open API、並行重複、スパイク、タイムアウト予算を検証する。
-  - p95目標、メモリ、同時実行数を測定し設定を調整する。
-  - 対応要件: 全機能要件、NFR1〜NFR6
+## フェーズ7: 可観測性・データ保護
 
-- [ ] 7.3 セキュリティ・IAM・データ保護レビューを完了する
-  - 最小権限、秘密、ログ、保有期間、削除、依存関係、脅威モデルを確認する。
-  - 対応要件: R2, R7, R9, R10, R11
+- [ ] 7.1 構造化ログを実装する
+  - connection state、匿名ID、event/result/reconnect/errorをallowlist出力する。
+  - raw SSE/chat/nickname/token/secretが出ないことをテストする。
+  - 対応: R10, R11
 
-- [ ] 7.4 Spoonへ最終審査・運用承認を申請する
-  - 実装と提出資料が一致することを確認する。
-  - 承認前は実際のSpoon利用者へ公開しない。
-  - 対応要件: R11, R12
+- [ ] 7.2 標準監視と予算通知を実装する
+  - ECS stopped、Lambda/DynamoDB error、lease heartbeat、ログベース調査、AWS Budgetsを設定する。
+  - 対応: R11, NFR4
 
-- [ ] 7.5 承認後にprodへリリースし、スモークテストする
-  - 手動承認ゲート、ロールバック、アラーム通知を確認する。
-  - 対応要件: R10, R11
-  - 依存: 7.1〜7.4
+- [ ] 7.3 明示削除と事故対応runbookを作成する
+  - Task停止、token revoke/delete、session delete、Spoon通知を手順化する。
+  - 対応: R2, R10, R11
+
+- [ ] 7.4 listener notice適合性を確認する
+  - 通知を妨げず、接続/再接続/停止時の表示を実配信前に確認する。
+  - 対応: R9
+
+## フェーズ8: デプロイ・受入
+
+- [ ] 8.1 GitHub Actions OIDCデプロイを実装する
+  - branch/environment条件付きtrustと最小権限を設定する。
+  - 対応: R12
+
+- [ ] 8.2 dev統合試験を実施する
+  - OAuth→RunTask→SSE→event→chat→停止を検証する。
+  - 長時間接続、切断、resume、Task再起動、region mismatchを検証する。
+  - 対応: R1〜R12
+
+- [ ] 8.3 性能・コスト試験を実施する
+  - event burst、メモリ、CPU、p95、Task稼働時間、ログ量、実コストを測定する。
+  - 対応: NFR1〜NFR5
+
+- [ ] 8.4 セキュリティ・規約レビューを完了する
+  - IAM、token、region allowlist、container、ログ、TTL、削除、listener noticeを確認する。
+  - 対応: R1, R2, R9〜R12
+
+- [ ] 8.5 Spoonの審査・運用承認後にprodを有効化する
+  - 承認前はprod Taskを起動しない。
+  - 対応: R12
 
 ## 要件カバレッジ
 
 | 要件 | 主なタスク |
 |---|---|
-| R1 Webhook受信 | 0.1, 1.2, 2.1, 2.4 |
-| R2 Webhook認証 | 0.1, 2.2, 2.4, 7.3 |
-| R3 検証・冪等性 | 0.1, 0.4, 2.3, 3.1, 3.2, 3.4 |
-| R4 ディスパッチ | 0.1, 0.3, 4.1, 4.4, 4.5 |
-| R5 コマンド解析 | 0.3, 4.2, 4.3, 4.5 |
-| R6 権限制御 | 0.3, 3.1, 4.2, 4.3, 4.5 |
-| R7 OAuth/API | 0.2, 5.1, 5.2, 5.4 |
-| R8 レート制御 | 0.2, 0.4, 3.3, 5.2, 5.3, 5.4 |
-| R9 データ管理 | 0.5, 3.1, 4.4, 5.1, 6.3 |
-| R10 監視・事故対応 | 0.5, 6.1, 6.2, 6.3, 7.3 |
-| R11 デプロイ・変更管理 | 0.2, 0.5, 1.2, 1.3, 7.1, 7.4, 7.5 |
-| R12 告知・表示 | 0.5, 6.4, 7.4 |
+| R1 登録・地域 | 0.1, 0.3, 2.3, 2.4 |
+| R2 OAuth | 0.2, 2.1, 2.2, 2.4, 7.3 |
+| R3 起動・停止 | 0.7, 1.3, 3.1〜3.3 |
+| R4 SSE | 0.4, 4.1〜4.4, 5.2 |
+| R5 検証・重複 | 0.4, 0.5, 4.2, 5.1〜5.3, 5.6 |
+| R6 Command/RBAC | 0.6, 5.4, 5.6 |
+| R7 Chat | 0.3, 0.5, 6.1〜6.3 |
+| R8 Event処理 | 0.4, 0.6, 5.1, 5.5, 5.6 |
+| R9 Listener notice | 0.1, 5.3, 7.4 |
+| R10 Data | 3.2, 5.2, 5.5, 7.1, 7.3 |
+| R11 Observability | 0.7, 3.2, 6.3, 7.1〜7.3 |
+| R12 Deploy/approval | 0.7, 1.3, 1.4, 8.1, 8.4, 8.5 |
 
-## 実装開始判定
-
-以下が全て満たされるまでフェーズ1以降へ進まない。
-- [ ] フェーズ0の5タスクが完了している。
-- [ ] `requirements.md` のP0にあるSpoon公式仕様の具体値が全て確定している。
-- [ ] DeferredのADR-006（正式コマンドカタログ）が確定している。
-- [ ] Spoon審査前の開発・テスト可能範囲が確認できている。
-- [ ] ユーザーがrequirements/design/tasksをレビューし、実装開始を承認している。
+## 実装開始ゲート
+- [ ] フェーズ0の公式契約・ユーザー仕様・コスト見積りが完了している。
+- [ ] 公式5 eventと必要permissionの正確な名称が確定している。
+- [ ] SSE reconnect/resumeとChat API rate limitが確定している。
+- [ ] Bot AccountとDeveloper Appが準備されている。
+- [ ] ユーザーが改訂requirements/design/tasksを承認している。
