@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-infrastructure:
+    name: Validate infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint==1.*
+
+      - name: Lint CloudFormation templates
+        run: cfn-lint infrastructure/*.yaml
+
+      - name: Check deploy script syntax
+        run: bash -n scripts/deploy-foundation.sh
+
+  guardrails:
+    name: Repository guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reject webhook/HMAC ingestion patterns
+        run: |
+          set -euo pipefail
+          if grep -R -n -E 'POST /webhook|X-Signature|hmac' \
+            --include='*.py' --include='*.yaml' --include='*.yml' \
+            infrastructure scripts 2>/dev/null; then
+            echo "Found a retired webhook/HMAC ingestion pattern." >&2
+            exit 1
+          fi
+          echo "No retired ingestion patterns found."
+
+      - name: Reject committed secrets in infrastructure
+        run: |
+          set -euo pipefail
+          if grep -R -n -E 'AKIA[0-9A-Z]{16}|SecretString|-----BEGIN [A-Z ]*PRIVATE KEY-----' \
+            infrastructure scripts 2>/dev/null; then
+            echo "Potential secret material committed to infrastructure." >&2
+            exit 1
+          fi
+          echo "No obvious secret material found."
