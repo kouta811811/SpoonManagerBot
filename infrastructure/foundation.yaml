@@ -273,7 +273,6 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:Query
-                  - dynamodb:TransactWriteItems
                   - dynamodb:UpdateItem
                 Resource: !GetAtt StateTable.Arn
         - PolicyName: manage-oauth-tokens

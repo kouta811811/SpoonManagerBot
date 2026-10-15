@@ -17,10 +17,6 @@ Parameters:
     Type: String
     Default: SpoonManagerBot
     Description: Repository name without the owner prefix.
-  DeployBranch:
-    Type: String
-    Default: main
-    Description: Branch allowed to run the deploy workflow.
   GitHubEnvironment:
     Type: String
     Default: dev

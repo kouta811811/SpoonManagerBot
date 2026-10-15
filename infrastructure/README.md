@@ -81,7 +81,6 @@ aws cloudformation deploy \
   --parameter-overrides \
     GitHubOwner=kouta811811 \
     GitHubRepo=SpoonManagerBot \
-    DeployBranch=main \
     GitHubEnvironment=dev \
     CreateOidcProvider=true
 ```
