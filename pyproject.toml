@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spoon-manager-bot"
+version = "0.1.0"
+description = "Spoon配信マネージャーBot"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "mypy==2.3.1",
+    "ruff==0.16.8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = ["src", "tests"]
+files = ["src", "tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# 入力資料・仕様書（Markdown内のコード例を含む）は整形しない
+extend-exclude = ["input", "docs", ".kiro"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+# 日本語の全角記号（、！／など）を「紛らわしい文字」として扱わない
+ignore = ["RUF001", "RUF002", "RUF003"]

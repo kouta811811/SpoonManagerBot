@@ -31,6 +31,32 @@ jobs:
       - name: Check deploy script syntax
         run: bash -n scripts/deploy-foundation.sh
 
+  python:
+    name: Python lint, types, tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: pip install -e '.[dev]'
+
+      - name: Ruff
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Mypy
+        run: mypy
+
+      - name: Pytest
+        run: pytest -q
+
   guardrails:
     name: Repository guardrails
     runs-on: ubuntu-latest
