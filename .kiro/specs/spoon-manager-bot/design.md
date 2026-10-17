@@ -268,7 +268,7 @@ sequenceDiagram
 - TokenはSSM Standard SecureStringへ分離保存する。access tokenは1時間で失効する。
 - token発行・更新のたびに付与scopeを保存し、Workerは有効な機能をscopeに合わせる（`chat.send` がなければ応答停止、`events.presence` がなければウェルカム無効）。
 - 要求scopeは機能設定から組み立てる。MVPは `events.chat events.like events.donation chat.send`（コマンドとハート・スプーンのお礼）。機能を追加するときは追加分だけで同意画面を再表示する。
-- Fargate Workerは `end.reason=TOKEN_EXPIRED` または401で一度だけrefresh（`grant_type=refresh_token`）する。同時refreshはDynamoDB lockで直列化する。refresh tokenは**ローテーションされる**（既定寿命30日）。更新のたびにレスポンスの新しい `refresh_token` を必ず上書き保存する（保存漏れは次回更新で `400 invalid_grant` を招く）。access tokenは既定1時間（`expires_in=3600`）、期限5分前を目安に先行更新する。
+- Fargate Workerは `end.reason=TOKEN_EXPIRED` または401で一度だけrefresh（`grant_type=refresh_token`）する。トークンを更新するのはleaseを持つWorkerだけなので、プロセス間の同時更新は起きない。Worker内のスレッド間は `threading.Lock` で直列化し、使った access token が既に置き換わっていれば更新しない。refresh tokenは**ローテーションされる**（既定寿命30日）。更新のたびにレスポンスの新しい `refresh_token` を必ず上書き保存する（保存漏れは次回更新で `400 invalid_grant` を招く）。access tokenは既定1時間（`expires_in=3600`）、期限5分前を目安に先行更新する。
 - revoke/解除時はTaskを先に停止し、`POST /v1/oauth/revoke` 後にSSM token、state、MANAGER登録を削除する。
 
 ## 8. 地域解決・通信保護
@@ -375,7 +375,7 @@ class SpoonRegionConfig:
 - CloudWatch Logs: 7日保持。
 
 ### コンテナ
-- 公開ソース用の公開container registryを使用し、Task Definitionでdigest固定する。
+- ECR（private、scan on push、タグ不変、最新5イメージを保持）を使い、Task DefinitionとLambdaはdigest固定する。Lambda Python 3.12 arm64 ベースの1イメージをWorker・OAuth callback・Controlで共用する（ADR-014）。
 - imageにcredentialを含めない。
 - root filesystem read-only、non-root user、不要Linux capabilityなし。
 
@@ -436,6 +436,8 @@ class SpoonRegionConfig:
 | ADR-010 | MANAGERはHOSTがBotの管理コマンドで登録する（Spoonのマネージャー指定とは連動しない） | Proposed |
 | ADR-011 | 入場ウェルカムは既定無効の任意機能（Botのマネージャー指定が必要） | Proposed |
 | ADR-012 | 起動時に配信中でない場合、既定10分待ってTaskを終了する | Proposed |
+| ADR-014 | コンテナはECR private の1イメージをWorkerとLambdaで共用する（Lambdaのイメージ取得にECRが必要なため、公開registry案から変更。保存費は月数セント） | Accepted |
+| ADR-015 | 起動leaseはControl Lambdaが300秒で取り、Workerが30秒ごとに120秒へ延長、終了時に外す。refreshのDynamoDB lockは使わない | Accepted |
 | ADR-013 | ハート・スプーンのお礼文はDJがチャットコマンドで登録しDynamoDBに保持する。未登録なら送らない。お礼はBot全体で15秒に1通、送り主をメモリにためて複数人を1通にまとめる | Accepted |
 
 ## 17. 参照資料

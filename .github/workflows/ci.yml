@@ -57,6 +57,21 @@ jobs:
       - name: Pytest
         run: pytest -q
 
+  image:
+    name: Build container image (arm64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: docker build --platform linux/arm64 -t spoon-manager-bot:ci .
+
+      - name: Smoke test entrypoints
+        run: |
+          docker run --rm --user 1000 --read-only --entrypoint python3 spoon-manager-bot:ci -c \
+            "import boto3, spoon_manager_bot.worker, spoon_manager_bot.control, spoon_manager_bot.oauth_callback; print('ok')"
+
   guardrails:
     name: Repository guardrails
     runs-on: ubuntu-latest
@@ -69,7 +84,7 @@ jobs:
           set -euo pipefail
           if grep -R -n -E 'POST /webhook|X-Signature|hmac' \
             --include='*.py' --include='*.yaml' --include='*.yml' \
-            infrastructure scripts 2>/dev/null; then
+            infrastructure scripts src 2>/dev/null; then
             echo "Found a retired webhook/HMAC ingestion pattern." >&2
             exit 1
           fi
@@ -79,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           if grep -R -n -E 'AKIA[0-9A-Z]{16}|SecretString|-----BEGIN [A-Z ]*PRIVATE KEY-----' \
-            infrastructure scripts 2>/dev/null; then
+            infrastructure scripts src 2>/dev/null; then
             echo "Potential secret material committed to infrastructure." >&2
             exit 1
           fi

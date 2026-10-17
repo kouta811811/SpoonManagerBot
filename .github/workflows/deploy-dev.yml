@@ -1,4 +1,4 @@
-name: Deploy dev foundation
+name: Deploy dev
 
 on:
   push:
@@ -6,6 +6,10 @@ on:
       - main
     paths:
       - 'infrastructure/foundation.yaml'
+      - 'infrastructure/app.yaml'
+      - 'src/**'
+      - 'Dockerfile'
+      - '.dockerignore'
       - '.github/workflows/deploy-dev.yml'
   workflow_dispatch:
 
@@ -14,22 +18,34 @@ permissions:
   id-token: write
 
 concurrency:
-  group: deploy-dev-foundation
+  group: deploy-dev
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Deploy foundation to dev
-    runs-on: ubuntu-latest
+    name: Deploy foundation, image, and app to dev
+    # arm64ランナーでイメージをそのままビルドする（Fargate・LambdaともARM64）
+    runs-on: ubuntu-24.04-arm
     environment: dev
     env:
       AWS_REGION: ap-northeast-1
-      STACK_NAME: spoon-manager-bot-dev-foundation
+      FOUNDATION_STACK: spoon-manager-bot-dev-foundation
+      APP_STACK: spoon-manager-bot-dev-app
       PROJECT_NAME: spoon-manager-bot
       ENVIRONMENT: dev
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Ensure AWS CLI
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null; then
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+          fi
+          aws --version
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -48,17 +64,11 @@ jobs:
           fi
           echo "Deploying to account ${account_id}."
 
-      - name: Validate template
-        run: |
-          aws cloudformation validate-template \
-            --region "${AWS_REGION}" \
-            --template-body "file://infrastructure/foundation.yaml" >/dev/null
-
       - name: Deploy foundation stack
         run: |
           aws cloudformation deploy \
             --region "${AWS_REGION}" \
-            --stack-name "${STACK_NAME}" \
+            --stack-name "${FOUNDATION_STACK}" \
             --template-file infrastructure/foundation.yaml \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset \
@@ -70,10 +80,93 @@ jobs:
               "Environment=${ENVIRONMENT}" \
               "ManagedBy=GitHubActions"
 
-      - name: Show stack outputs
+      - name: Read foundation outputs
+        id: foundation
+        run: |
+          set -euo pipefail
+          out() {
+            aws cloudformation describe-stacks --region "${AWS_REGION}" --stack-name "${FOUNDATION_STACK}" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" --output text
+          }
+          for key in ImageRepositoryUri PublicSubnetIds WorkerSecurityGroupId StateTableName StateTableArn \
+                     EcsClusterName EcsClusterArn EcsTaskExecutionRoleArn EcsTaskRoleArn WorkerLogGroupName; do
+            value="$(out "${key}")"
+            if [[ -z "${value}" || "${value}" == "None" ]]; then
+              echo "Missing foundation output ${key}" >&2
+              exit 1
+            fi
+            echo "${key}=${value}" >> "${GITHUB_OUTPUT}"
+          done
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: image
+        env:
+          REPOSITORY: ${{ steps.foundation.outputs.ImageRepositoryUri }}
+        run: |
+          set -euo pipefail
+          tag="${REPOSITORY}:${GITHUB_SHA}"
+          if aws ecr describe-images --region "${AWS_REGION}" \
+               --repository-name "${REPOSITORY##*/}" --image-ids imageTag="${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "Image for ${GITHUB_SHA} already exists; reusing it."
+          else
+            docker build --platform linux/arm64 -t "${tag}" .
+            docker push "${tag}"
+          fi
+          digest="$(aws ecr describe-images --region "${AWS_REGION}" \
+            --repository-name "${REPOSITORY##*/}" --image-ids imageTag="${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' --output text)"
+          echo "uri=${REPOSITORY}@${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate app template
+        run: |
+          aws cloudformation validate-template \
+            --region "${AWS_REGION}" \
+            --template-body "file://infrastructure/app.yaml" >/dev/null
+
+      - name: Deploy app stack
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          SUBNETS: ${{ steps.foundation.outputs.PublicSubnetIds }}
+          SECURITY_GROUP: ${{ steps.foundation.outputs.WorkerSecurityGroupId }}
+          TABLE_NAME: ${{ steps.foundation.outputs.StateTableName }}
+          TABLE_ARN: ${{ steps.foundation.outputs.StateTableArn }}
+          CLUSTER_NAME: ${{ steps.foundation.outputs.EcsClusterName }}
+          CLUSTER_ARN: ${{ steps.foundation.outputs.EcsClusterArn }}
+          EXECUTION_ROLE: ${{ steps.foundation.outputs.EcsTaskExecutionRoleArn }}
+          TASK_ROLE: ${{ steps.foundation.outputs.EcsTaskRoleArn }}
+          LOG_GROUP: ${{ steps.foundation.outputs.WorkerLogGroupName }}
+        run: |
+          aws cloudformation deploy \
+            --region "${AWS_REGION}" \
+            --stack-name "${APP_STACK}" \
+            --template-file infrastructure/app.yaml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "ProjectName=${PROJECT_NAME}" \
+              "Environment=${ENVIRONMENT}" \
+              "ImageUri=${IMAGE_URI}" \
+              "SubnetIds=${SUBNETS}" \
+              "WorkerSecurityGroupId=${SECURITY_GROUP}" \
+              "StateTableName=${TABLE_NAME}" \
+              "StateTableArn=${TABLE_ARN}" \
+              "EcsClusterName=${CLUSTER_NAME}" \
+              "EcsClusterArn=${CLUSTER_ARN}" \
+              "EcsTaskExecutionRoleArn=${EXECUTION_ROLE}" \
+              "EcsTaskRoleArn=${TASK_ROLE}" \
+              "WorkerLogGroupName=${LOG_GROUP}" \
+            --tags \
+              "Project=${PROJECT_NAME}" \
+              "Environment=${ENVIRONMENT}" \
+              "ManagedBy=GitHubActions"
+
+      - name: Show app outputs
         run: |
           aws cloudformation describe-stacks \
             --region "${AWS_REGION}" \
-            --stack-name "${STACK_NAME}" \
+            --stack-name "${APP_STACK}" \
             --query 'Stacks[0].Outputs' \
             --output table

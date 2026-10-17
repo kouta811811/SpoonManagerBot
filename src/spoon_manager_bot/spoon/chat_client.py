@@ -14,11 +14,20 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
-from urllib.parse import urlsplit
 
 from spoon_manager_bot.domain.text import fits_chat
+from spoon_manager_bot.spoon.errors import detail_code
+from spoon_manager_bot.spoon.http import Opener, default_open, header, retry_after_seconds
+from spoon_manager_bot.spoon.region import validate_base_url
 
-ALLOWED_API_HOSTS = frozenset({"jp-openapi.spooncast.net", "kr-openapi.spooncast.net"})
+__all__ = [
+    "ChatOutcome",
+    "ChatResult",
+    "ChatSender",
+    "SpoonChatClient",
+    "validate_base_url",
+]
+
 CHAT_PATH = "/v1/live/chat"
 DEFAULT_TIMEOUT = 5.0
 RATE_LIMIT_HEADERS = (
@@ -63,40 +72,6 @@ class ChatSender(Protocol):
     def send(self, message: str) -> ChatResult: ...
 
 
-class _HttpResponse(Protocol):
-    status: int
-
-    @property
-    def headers(self) -> Any: ...
-
-    def read(self) -> bytes: ...
-
-
-Opener = Callable[[urllib.request.Request, float], _HttpResponse]
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        return None
-
-
-_OPENER = urllib.request.build_opener(_NoRedirect)
-
-
-def _default_open(request: urllib.request.Request, timeout: float) -> _HttpResponse:
-    response: _HttpResponse = _OPENER.open(request, timeout=timeout)
-    return response
-
-
-def validate_base_url(base_url: str) -> str:
-    parts = urlsplit(base_url)
-    if parts.scheme != "https" or parts.hostname not in ALLOWED_API_HOSTS:
-        raise ValueError("base_url must be an allowlisted https Spoon API host")
-    if parts.path not in ("", "/") or parts.query or parts.fragment or parts.port:
-        raise ValueError("base_url must not contain a path, query, fragment, or port")
-    return f"https://{parts.hostname}"
-
-
 class SpoonChatClient:
     def __init__(
         self,
@@ -104,7 +79,7 @@ class SpoonChatClient:
         access_token: Callable[[], str],
         *,
         timeout: float = DEFAULT_TIMEOUT,
-        opener: Opener = _default_open,
+        opener: Opener = default_open,
     ) -> None:
         self._url = validate_base_url(base_url) + CHAT_PATH
         self._access_token = access_token
@@ -133,39 +108,11 @@ class SpoonChatClient:
         return _classify(response.status, response.headers, b"")
 
 
-def _header(headers: Any, name: str) -> str | None:
-    if headers is None:
-        return None
-    value = headers.get(name)
-    return None if value is None else str(value)
-
-
-def _detail_code(body: bytes) -> str | None:
-    if not body:
-        return None
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    code = payload.get("detailCode") if isinstance(payload, dict) else None
-    return code if isinstance(code, str) else None
-
-
-def _retry_after(headers: Any) -> float | None:
-    raw = _header(headers, "Retry-After")
-    if raw is None:
-        return None
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        return None
-
-
 def _classify(status: int, headers: Any, body: bytes) -> ChatResult:
     rate_limit = {
-        name: value for name in RATE_LIMIT_HEADERS if (value := _header(headers, name)) is not None
+        name: value for name in RATE_LIMIT_HEADERS if (value := header(headers, name)) is not None
     }
-    code = _detail_code(body)
+    code = detail_code(body)
 
     def result(outcome: ChatOutcome, retry_after: float | None = None) -> ChatResult:
         return ChatResult(outcome, status, code, retry_after, rate_limit)
@@ -187,7 +134,7 @@ def _classify(status: int, headers: Any, body: bytes) -> ChatResult:
     if status == 429:
         if code == "OAPI_MNGR_0302":
             return result(ChatOutcome.CHAT_BUSY)
-        return result(ChatOutcome.RATE_LIMITED, _retry_after(headers))
+        return result(ChatOutcome.RATE_LIMITED, retry_after_seconds(headers))
     if status >= 500:
         return result(ChatOutcome.SERVER_ERROR)
     return result(ChatOutcome.INVALID)

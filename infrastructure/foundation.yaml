@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Cost-controlled AWS foundation for SpoonManagerBot. Creates no running
-  Fargate tasks and no public inbound endpoints.
+  Cost-controlled AWS foundation for SpoonManagerBot (network, state table,
+  image repository, ECS cluster, IAM roles). Creates no running Fargate tasks
+  and no public inbound endpoints.
 
 Parameters:
   ProjectName:
@@ -195,6 +196,51 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  ImageRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectName}-${Environment}'
+      EmptyOnDelete: true
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep the 5 most recent images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 5
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+      RepositoryPolicyText:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: LambdaImagePull
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+            Condition:
+              StringLike:
+                aws:sourceArn: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-${Environment}-*'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
   EcsCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -234,15 +280,19 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub '${WorkerLogGroup.Arn}:*'
-        - PolicyName: read-worker-secrets
+        - PolicyName: pull-worker-image
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
                 Action:
-                  - ssm:GetParameter
-                  - ssm:GetParameters
-                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/*'
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !GetAtt ImageRepository.Arn
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -314,5 +364,7 @@ Outputs:
     Value: !GetAtt EcsTaskRole.Arn
   WorkerLogGroupName:
     Value: !Ref WorkerLogGroup
+  ImageRepositoryUri:
+    Value: !GetAtt ImageRepository.RepositoryUri
   SsmParameterPath:
     Value: !Sub '/${ProjectName}/${Environment}/'
