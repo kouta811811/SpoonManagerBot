@@ -1,0 +1,84 @@
+DJ をフォロー
+ボットアカウントでこの DJ をフォローします。Spoon アプリでフォローボタンを押したのと同じフォローです。
+
+DJ がボットを 固定マネージャー に指定するには、ボットアカウントが先にその DJ をフォローしている 必要があります。ボットアカウントでアプリにログインしなくても、この API で済ませられます。
+
+メソッド・パス	POST /v1/live/follow
+必要な権限	dj.follow
+成功レスポンス	204(ボディなし)
+配信中でないとき	404(OAPI_MNGR_0301)
+export SPOON_BASE_URL="https://jp-openapi.spooncast.net"
+export SPOON_ACCESS_TOKEN="{発行された access token}"
+
+韓国リージョンなら https://kr-openapi.spooncast.net です — リージョン別アドレス。
+
+リクエスト
+POST /v1/live/follow
+
+ヘッダー
+名前	必須	説明
+Authorization	✔	Bearer {access_token} 形式です。
+パスパラメータ・クエリパラメータ・リクエストボディは ありません。
+
+誰をフォローするかは トークンが決めます。 そのトークンに同意した DJ です。他の人をフォローすることはできません。
+
+リクエスト例
+curl -i -X POST "$SPOON_BASE_URL/v1/live/follow" \
+  -H "Authorization: Bearer $SPOON_ACCESS_TOKEN"
+
+レスポンス
+成功すると ボディなしで 204 です。すでにフォロー中でも 204 です。
+
+HTTP/2 204
+
+コード
+// follow.ts — node --experimental-strip-types follow.ts
+
+interface ApiError {
+  detailCode: string;
+  message: string;
+}
+
+const res = await fetch(`${process.env.SPOON_BASE_URL}/v1/live/follow`, {
+  method: 'POST',
+  headers: { Authorization: `Bearer ${process.env.SPOON_ACCESS_TOKEN}` },
+});
+
+if (res.status === 204) {
+  console.log('フォローしました。配信が終わったら DJ に固定マネージャーの指定を案内します。');
+} else if (res.status === 404) {
+  console.log('配信中ではありません。配信が始まったらもう一度呼びます。');
+} else if (res.status === 429) {
+  console.log('呼び出し上限にかかりました。しばらくしてもう一度呼びます。');
+} else if (res.status === 401) {
+  console.error('連携が切れました。DJ に再連携を案内します。');
+} else {
+  // 権限不足の 403 は手前で止められるため detailCode がありません
+  const { detailCode, message } = (await res.json()) as Partial<ApiError>;
+  console.error(`フォロー失敗 ${res.status} ${detailCode ?? '権限不足'}: ${message ?? ''}`);
+}
+
+node --experimental-strip-types follow.ts
+
+注意
+配信中にしか使えません。 配信中でなければ 404(OAPI_MNGR_0301)です。
+
+フォローだけではマネージャーになりません。 固定マネージャーの指定は DJ が Spoon アプリで行います。 そして 固定マネージャーは DJ が配信中は変更できません。 フォローは配信中にしかできないので、 順番は次のとおりです。
+
+配信中にボットがこの API を呼んで DJ をフォローします。
+配信が終わったあと、DJ が Spoon アプリでボットアカウントを固定マネージャーに指定します。
+次の配信でボットが接続するとマネージャー等級で入り、presence イベントが届きます。
+一度で十分です。 すでにフォロー中でも 204 なので、配信のたびに呼ぶ必要はありません。
+
+フォローは配信に表示されます。 Spoon アプリでフォローしたときと同じく、DJ・マネージャーの チャット欄にフォローメッセージが表示され、この配信の新規ファン数にも数えられます。
+
+フォロー解除の API はありません。 解除するには、ボットアカウントで Spoon アプリにログインして直接解除します。
+
+エラー
+HTTP	detailCode	何が起きたか	どうするか
+401	なし	トークンがないか無効です。	DJ に再連携を案内します。
+403	なし	dj.follow の権限がありません。	権限を追加して再同意を得ます。
+403	OAPI_MNGR_0211	ボットアカウントがこの DJ をフォローできません。DJ がボットをブロックした可能性があります。	再試行では解決しません。DJ が解除する必要があります。
+404	OAPI_MNGR_0301	配信中ではありません。	配信が始まってからもう一度呼びます。
+502	OAPI_MNGR_2302	配信サーバーのエラーです。	バックオフしてから再試行します。
+この表にない状態も返ることがあります。 誤ったメソッド(405、OAPI_MNGR_0103)・呼び出し上限 (429、ボディなし)・サーバーエラー(500、OAPI_MNGR_1002)は すべてのエンドポイントに共通 です — エラーコード にあります。
