@@ -183,8 +183,8 @@ STREAMING
 - LISTENER: それ以外、および判定できない場合。
 
 ### 6.2 入場ウェルカム（任意機能）
-- 既定は無効。有効化には `events.presence` の同意と、DJによるBotのマネージャー指定が必要。
-- 運用手順: 配信中にBotアカウントでDJをフォロー（`POST /v1/live/follow` またはアプリから）→ 配信後にDJがBotを固定マネージャーに指定 → 次回配信から有効。
+- 既定は無効。有効化には `events.presence` と `dj.follow` の追加同意、DJによるBotの固定マネージャー指定が必要。同意は積み重なるため、追加分だけで同意画面を再表示する。
+- 運用手順: 追加同意 → 配信中にWorkerが一度だけ `POST /v1/live/follow` を呼ぶ（またはBotアカウントでアプリから直接フォロー）→ 配信後にDJがBotを固定マネージャーに指定 → 次回配信から有効。
 - Botがマネージャーでなくてもエラーにはならず、`presence` が届かないだけなので、届かない状態を監視ログで検知できるようにする。
 
 ## 7. OAuth設計
@@ -194,6 +194,8 @@ STREAMING
 - callback Lambdaはstateを条件付きで一回利用にし、受信後60秒以内にcodeを `POST /v1/oauth/token`（`grant_type=authorization_code`）でtokenへ交換する。
 - OAuth endpointはBasic認証（Client ID/Secret）+ `application/x-www-form-urlencoded`。エラーはRFC 6749の `error` で分岐する（`invalid_grant` は再連携、`invalid_client` は設定不備）。
 - TokenはSSM Standard SecureStringへ分離保存する。access tokenは1時間で失効する。
+- token発行・更新のたびに付与scopeを保存し、Workerは有効な機能をscopeに合わせる（`chat.send` がなければ応答停止、`events.presence` がなければウェルカム無効）。
+- 要求scopeは機能設定から組み立てる。MVPは `events.chat chat.send`。機能を追加するときは追加分だけで同意画面を再表示する。
 - Fargate Workerは `end.reason=TOKEN_EXPIRED` または401で一度だけrefresh（`grant_type=refresh_token`）する。同時refreshはDynamoDB lockで直列化する。refresh tokenがローテーションされる場合に備え、レスポンスに含まれていれば常に上書き保存する。
 - revoke/解除時はTaskを先に停止し、`POST /v1/oauth/revoke` 後にSSM token、state、MANAGER登録を削除する。
 

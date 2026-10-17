@@ -14,10 +14,10 @@
   - [ ] 残り: refresh tokenの有効期限とローテーション、PKCE対応、同意拒否時のcallback。
   - 対応: R2
 
-- [ ] 0.3 最小権限セットを確定する
-  - MVPは `events.chat chat.send`。入場・ハート・ギフトを有効にする場合だけ `events.presence` / `events.like` / `events.donation` を追加する。
-  - [ ] 残り: 11権限の残り5種類と、`POST /v1/live/follow` に必要な権限。
-  - Developer App登録値とDJ同意要求を一致させる。
+- [x] 0.3 最小権限セットを確定する
+  - 権限一覧9種類を `docs/spoon-api-contract.md` に記録した。
+  - MVPは `events.chat chat.send`。入場ウェルカムは `events.presence dj.follow`、ハート・ギフトは `events.like` / `events.donation` を追加同意する。
+  - [ ] 残り: Developer Appへの登録値とDJ同意要求を一致させる（0.1と合わせて実施）。
   - 対応: R1, R4, R7
 
 - [x] 0.4 SSE契約を記録する

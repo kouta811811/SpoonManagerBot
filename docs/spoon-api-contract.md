@@ -40,21 +40,41 @@ OAuth endpointのエラーはRFC 6749形式（`error` / `error_description`）�
 | `invalid_grant` | 400 | codeの期限切れ・使用済み、またはrefresh_token失効。refresh失敗ならDJに再連携を案内 |
 | `unsupported_grant_type` | 400 | 実装バグ |
 
-## 3. 権限（scope）
+## 3. 権限（scope）（確認済み）
 
-公式は11種類。確認できたもの:
+公式の権限一覧は9種類（以前の英語版抜粋の「11種類」は一覧と一致しないため、一覧を正とする）。
 
-| 権限 | 用途 | 確度 |
+| scope | 与えるもの | 対応API |
 |---|---|---|
-| `events.chat` | チャット受信 | 確認済み |
-| `events.presence` | 入場受信（**Botがマネージャーである必要あり**） | 確認済み |
-| `events.like` | ハート受信 | 確認済み |
-| `events.donation` | ギフト受信 | 確認済み |
-| `chat.send` | Bot名義チャット送信 | 抜粋 |
-| `live.read` | 現在の配信情報 `GET /v1/live` | 抜粋 |
-| 残り5種類 | — | **未確認** |
+| `live.read` | 配信タイトル・開始/終了時刻・リスナー数・挨拶・カテゴリ・チャット凍結状態 | 現在の配信を取得 `GET /v1/live` |
+| `listeners.read` | 部屋にいるリスナーの id・ニックネーム | リスナー一覧を取得 |
+| `fans.read` | ギフトが多い順のリスナー順位 | ファンランキングを取得 |
+| `events.chat` | リスナーのチャットとDJのクイックメッセージ | イベントストリーム `chat` |
+| `events.presence` | リスナーの入場（**Botがマネージャーである必要あり**） | イベントストリーム `presence` |
+| `events.like` | リスナーが送ったハート | イベントストリーム `like` |
+| `events.donation` | 送り主・合計スプーン・一言 | イベントストリーム `donation` |
+| `chat.send` | Botアカウント名での発言 | チャットを送る `POST /v1/live/chat` |
+| `dj.follow` | BotアカウントでのDJのフォロー（固定マネージャー指定の前に必要） | DJをフォロー `POST /v1/live/follow` |
 
-MVPの要求scope: `events.chat chat.send`。入場・ハート・ギフト機能を有効にする場合だけ該当 `events.*` を追加する。
+用途別の組み合わせ（公式の推奨）:
+
+| Botの機能 | 必要な権限 |
+|---|---|
+| チャットに反応して返す | `events.chat` `chat.send` |
+| 配信の開始・終了を案内する | `live.read` `chat.send` |
+| 入場したリスナーを歓迎する | `events.presence` `chat.send` `dj.follow`（＋DJによる固定マネージャー指定） |
+| ギフトにお礼を送る | `events.donation` `chat.send` |
+| ハートを集計して目標を知らせる | `events.like` `chat.send` |
+| リスナーから抽選する | `listeners.read` `chat.send` |
+| ファンランキングを読み上げる | `fans.read` `chat.send` |
+
+- 要求できるのはアプリに登録した権限だけ。動作するのはDJが許可した権限だけ。
+- 同意画面の `scope` にスペース区切り（URLでは `%20`）で並べる。権限が多いほどDJは許可をためらうため、使うものだけを要求する。
+- **同意は積み重なる。** 後から権限を追加するときは、増やした権限で同意画面をもう一度表示すればよく、DJには新しく要求した権限だけが表示される。
+- 発行されたトークンのscopeはその時点のDJの同意に基づく。**トークンの更新のたびにscopeを確認する。**
+- `events.*` の4権限は1つの接続を共有する（§4.1）。
+
+MVPの要求scope: `events.chat chat.send`。入場ウェルカムを有効にする場合は `events.presence dj.follow`、ハート・ギフト機能を有効にする場合は `events.like` / `events.donation` を追加で要求する（同意は積み重なるため、後から追加できる）。
 
 ## 4. イベントストリーム `GET /v1/live/events`（確認済み）
 
@@ -167,7 +187,8 @@ data:{...json...}
 ## 5. マネージャー指定（確認済み）
 
 - 指定はDJがSpoonアプリで行う。APIでは要求できない。
-- 推奨は固定マネージャー。BotアカウントがDJを先にフォローしている必要がある（配信中に `POST /v1/live/follow`、またはBotアカウントでアプリから直接）。
+- 推奨は固定マネージャー。BotアカウントがDJを先にフォローしている必要がある（`dj.follow` を得て配信中に `POST /v1/live/follow`、またはBotアカウントでアプリから直接）。
+- 同意があっても指定がなければエラーにならず、`presence` だけが届かない（配信サーバーが入場通知をマネージャー等級で発行するため）。
 - 固定マネージャーはDJの配信中には変更できない。フォローは配信中しかできない。→ 配信中にフォローし、配信後にDJが指定すると次回配信から有効。
 - 配信ごとの指定は最大3名。部屋にいる人だけ指定できる。指定・解除は数秒で反映され、再接続は不要。
 - マネージャーになると、マネージャー等級のメッセージも届く。DMはどの場合も届かない。
@@ -230,18 +251,16 @@ Bot API（OAuth endpoint以外）はRFC 7807形式:
 - リスナー向け告知はBotの上限に数えない。
 
 ## 9. 未確認事項
-1. refresh tokenの有効期限、refresh時にrefresh tokenも新しくなるか（ローテーション）
+1. refresh tokenの有効期限、refresh時にrefresh tokenも新しくなるか（ローテーション）、tokenレスポンスでのscopeの表し方
 2. PKCE対応有無、`state` の扱い、同意拒否時のエラーパラメータ
-3. 11種類の権限の残り5種類
-4. `POST /v1/live/chat` のrequest/response schema、再送の安全性
-5. `POST /v1/live/follow` に必要な権限
-6. 秒あたり・1日あたりの具体的な上限値（実レスポンスのヘッダーで確認する）
+3. `POST /v1/live/chat` のrequest/response schema、再送の安全性
+4. 秒あたり・1日あたりの具体的な上限値（実レスポンスのヘッダーで確認する）
 
 ## 参照
 - [Event stream](https://developers.spooncast.net/docs/ja/api-reference/live-events)（確認済み）
 - [Error codes](https://developers.spooncast.net/docs/ja/api-reference/error-codes)（確認済み）
 - [Build a bot](https://developers.spooncast.net/docs/en/getting-started/build-a-bot)
-- [Choosing permissions](https://developers.spooncast.net/docs/en/getting-started/choosing-permissions)
+- [権限を選ぶ（日本語）](https://developers.spooncast.net/docs/ja/getting-started/choosing-permissions)（確認済み）
 - [Get a DJ's consent](https://developers.spooncast.net/docs/en/getting-started/user-authorization)
 - [Tokens](https://developers.spooncast.net/docs/en/api-reference/tokens)
 - [Chat](https://developers.spooncast.net/docs/en/api-reference/chat)

@@ -72,6 +72,8 @@ Spoon Developers公式Open APIと連携し、DJのライブ配信へ接続して
 3. WHEN OAuth callbackを受信するとき、THE SYSTEM SHALL `state`、有効期限、redirect URIを検証し、受信から60秒以内に認可コードを `POST /v1/oauth/token` でトークンへ交換する。
 3a. THE SYSTEM SHALL OAuth endpointへはBasic認証と `application/x-www-form-urlencoded` で送信し、エラーはRFC 6749の `error` で分岐する。
 4. THE SYSTEM SHALL 1組のアクセストークンを認可した1 DJだけに関連付ける。
+4a. THE SYSTEM SHALL token発行・更新のたびに付与されたscopeを確認し、有効な機能をそのscopeに合わせる（例: `chat.send` がなければ応答を止め、受信だけ続ける）。
+4b. WHEN 後から機能を追加するとき、THE SYSTEM SHALL 追加分の権限だけで同意画面を再表示する（同意は積み重なる）。
 5. THE SYSTEM SHALL Client Secret、Access Token、Refresh TokenをSSM Parameter Store Standard TierのSecureStringへ分離保存する。
 6. WHEN `end.reason=TOKEN_EXPIRED`、401、またはAccess Tokenの期限（発行から1時間）が近いとき、THE SYSTEM SHALL Refresh Tokenで一度だけ更新し、結果を原子的に保存する。refresh後も401なら再試行せず停止する。
 7. WHEN 同意が拒否、取消、権限不足、または更新不能になったとき、THE SYSTEM SHALL SSE接続とチャット送信を停止し、再認可が必要な状態にする。
@@ -127,7 +129,7 @@ Spoon Developers公式Open APIと連携し、DJのライブ配信へ接続して
 
 ### R8. イベント別処理
 1. WHEN `presence`（入場）を受信したとき、THE SYSTEM SHALL 設定で有効な場合だけウェルカム応答を生成する。同じ `user.id` へは同じ配信中に二度あいさつしない。
-1a. THE SYSTEM SHALL 入場ウェルカムを任意機能とする。有効化には `events.presence` の同意と、DJによるBotのマネージャー指定（BotがDJを先にフォローしている必要あり）が必要であることを運用手順に記載する。
+1a. THE SYSTEM SHALL 入場ウェルカムを任意機能とする。有効化には `events.presence` と `dj.follow` の同意、BotによるDJのフォロー、DJによるBotの固定マネージャー指定が必要であることを運用手順に記載する。
 2. WHEN `chat` を受信したとき、THE SYSTEM SHALL R6に従ってコマンドを処理する。
 3. WHEN `like`（ハート）を受信したとき、THE SYSTEM SHALL `totalAmount` で配信内集計する。応答は `type=PAID` だけを既定とし、`FREE` に応答する場合はクールダウンを置く。
 4. WHEN `donation`（ギフト）を受信したとき、THE SYSTEM SHALL 設定に従いお礼応答と、`amount`（合計スプーン数、掛け算済み）による配信内集計を行う。`like.amount` と単位を混同しない。
@@ -219,15 +221,14 @@ Spoon Developers公式Open APIと連携し、DJのライブ配信へ接続して
 ### 確定済み（`docs/spoon-api-contract.md`）
 - 日本のbase URL、同意画面URL、token/revoke endpoint、access token有効期限（1時間）、認可コード期限（60秒）
 - イベントストリームの認証・5イベントのschema・heartbeat・`end.reason`・再開未提供・重複接続・入場の扱い
-- 確認できた権限名（`events.chat` / `events.presence` / `events.like` / `events.donation` / `chat.send` / `live.read`）
+- 権限一覧9種類（`live.read` / `listeners.read` / `fans.read` / `events.chat` / `events.presence` / `events.like` / `events.donation` / `chat.send` / `dj.follow`）と用途別の組み合わせ、同意の積み重ね
 - エラー形式とdetailCode、呼び出し上限（秒あたり・1日あたり）とヘッダー
 - チャット本文の上限（200文字）、Bot自己発言がストリームに戻らないこと
 
 ### P0（未確認、実装前に確認）
-1. refresh tokenの有効期限と、refresh時のローテーション有無。
+1. refresh tokenの有効期限、refresh時のローテーション有無、tokenレスポンスでのscopeの表し方。
 2. PKCE対応有無、同意拒否時のcallbackパラメータ。
 3. `POST /v1/live/chat` のrequest/response schemaと再送の安全性。
-4. 残り5種類の権限名と、`POST /v1/live/follow` に必要な権限。
 
 ### ユーザー仕様待ち
 1. `help`, `song`, `dice` と管理コマンドの名称、引数、応答、許可ロール。
