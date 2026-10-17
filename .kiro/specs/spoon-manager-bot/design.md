@@ -119,59 +119,83 @@ scripts/
 └── start_oauth.py
 ```
 
+外部仕様の詳細は [`docs/spoon-api-contract.md`](../../../docs/spoon-api-contract.md) を正とする。
+
 ### 5.2 `SseClient`
 ```python
 class SseClient(Protocol):
-    def events(self, token: str, resume_id: str | None = None) -> Iterator[SseMessage]: ...
+    def events(self, token: str) -> Iterator[SseMessage]: ...
 ```
 
-- `Accept: text/event-stream` とBearer Tokenを使用する。
-- allowlist済み地域別base URL以外へ接続しない。
-- redirectは原則拒否し、Tokenを別hostへ転送しない。
-- 接続タイムアウトを持ち、read timeoutは公式heartbeat間隔より長く設定する。
-- HTTP statusを先に分岐する。SSEエラー本文も `data:` で始まり得るため、無条件にJSONとして解析しない。
-- 401は単一refresh、403は停止、429はRetry-After、5xx/切断は上限付きbackoffとする。
+- `Authorization: Bearer` と `Accept: text/event-stream` だけを送る。path/queryなし。
+- allowlist済み地域別base URL（MVPは `jp-openapi.spooncast.net`）以外へ接続しない。
+- redirectは拒否し、Tokenを別hostへ転送しない。
+- connect timeout 10秒、read timeoutは45秒（heartbeat 15秒の3倍）。超過したら切断とみなす。
+- HTTP statusで先に分岐する。エラーbodyもSSE形式のため、`data:` を外してから `detailCode` を読む。
+- 再開（`Last-Event-ID`）は送らない（公式未提供）。
 
 ### 5.3 `SseParser`
 - chunk境界と行境界が一致しない前提でbufferする。
-- CRLF/LF、複数`data:`行、`event:`、`id:`、`retry:`、コメント行、空行dispatchを処理する。
-- 1イベントの最大bytesを設定し、超過時は接続を安全に閉じる。
-- JSON化後に公式種別ごとの型付きschemaへ変換する。
-- 未知fieldは前方互換性のため許容し、未知event typeは副作用なしで無視する。
+- CRLF/LF、複数`data:`行、`event:`、`id:`、`retry:`、`:` comment（heartbeat）、空行dispatchを処理する。`data:` のないフレームはdispatchしない。
+- 1イベントの最大bytes（既定64KiB）を設定し、超過時は接続を閉じて再接続する。
+- JSON化後に公式5種別の型付きモデルへ変換する。未知fieldは無視し、未知event typeは副作用なしで無視する。
 
-### 5.4 再接続
+### 5.4 接続ループ（`end.reason` 駆動）
 ```text
-CONNECTED -> TRANSIENT_FAILURE -> BACKING_OFF -> CONNECTING
-CONNECTED -> AUTH_EXPIRED -> REFRESH_ONCE -> CONNECTING
-CONNECTED -> PERMISSION_OR_REGION_ERROR -> STOPPED
-CONNECTED -> LIVE_ENDED / OPERATOR_STOP -> STOPPED
+CONNECTING
+  ├─ 200 → STREAMING
+  ├─ 404 OAPI_MNGR_0301 → WAITING_FOR_LIVE（5〜30秒jitter、待機上限で STOPPED）
+  ├─ 401 → REFRESH_ONCE → CONNECTING（refresh後も401なら STOPPED: REAUTH_REQUIRED）
+  ├─ 403 detailCodeなし → STOPPED: CONSENT_REQUIRED
+  ├─ 403 OAPI_MNGR_0209 → STOPPED: BLOCKED_BY_DJ
+  ├─ 429（body空） → BACKING_OFF（Retry-Afterがあれば優先）
+  └─ 500 / 502 / ネットワーク失敗 → BACKING_OFF（1→2→4…最大30秒 + full jitter）
+STREAMING
+  ├─ end LIVE_ENDED → STOPPED: LIVE_ENDED
+  ├─ end TOKEN_EXPIRED → REFRESH_ONCE → CONNECTING（待たない）
+  ├─ end RECONNECT → CONNECTING（待たない）
+  ├─ end DUPLICATE_CONNECTION → STOPPED: DUPLICATE
+  └─ endなし切断 / read timeout → BACKING_OFF
 ```
 
-- 公式の`retry:`/Retry-Afterを優先する。
-- それ以外はfull jitter付き指数backoff、上限と連続失敗回数を設定する。
-- event ID/resume仕様が提供される場合だけcheckpointを使う。
-- 再接続がlistener noticeを再投稿する可能性があるため、不要な定期再接続を行わない。
+- 配信中かを `GET /v1/live` で事前確認しない（往復が増え、確認と接続の間に終わる可能性があるため）。
+- `TOKEN_EXPIRED` は1時間ごとに必ず発生する正常系。事前refreshしても開いているストリームは失効時刻に閉じるため、`end` を契機にrefreshする。
+- 再接続しても入場メッセージは再表示されない。不要な定期再接続は行わない。
+- 連続失敗回数の上限（既定20回）を超えたら STOPPED にして通知する。
 
 ## 6. イベント処理
 
-| 公式カテゴリ | 内部型 | 処理 |
+| event | 内部型 | 処理 |
 |---|---|---|
-| chat | ChatEvent | 自己投稿除外、コマンド解析、RBAC |
-| join | JoinEvent | 頻度制限付きwelcome |
-| heart | HeartEvent | 承認済み集計/応答 |
-| donation | DonationEvent | お礼と配信内集計 |
-| 5番目の公式event | Pending | 公式schema確認後に追加 |
+| `chat` | ChatEvent | コマンド解析、RBAC（`isDj` でHOST判定） |
+| `presence` | PresenceEvent | 任意のウェルカム（同一配信で `user.id` 単位に一度） |
+| `like` | LikeEvent | `totalAmount` で集計、`PAID` に応答 |
+| `donation` | DonationEvent | `amount`（合計スプーン）で集計、お礼 |
+| `end` | StreamEndEvent | 接続ループへ `reason` を返す |
 
-旧 `live.end` は削除する。SSE切断をlive endとして扱わない。Bot自身のchatおよびlistener noticeがstreamへ返るかを契約テストし、公式actor識別子で除外する。
+- Bot自身の発言はストリームに戻らないため、自己発言の除外処理は持たない。同じ配信の他Botとの応答ループを防ぐため、無視するユーザーIDを設定できる。
+- 発言者の識別は `user.id` のみ。`nickname` はnullがあり得るため表示時に「匿名」等へ置換する。
+- ストリームの再開が未提供のため、イベント単位の重複抑止テーブルとcheckpointは持たない。`presence` の再入場だけはメモリ内の `user.id` 集合で除く（Task再起動時のリセットは許容）。
+
+### 6.1 ロール判定
+- HOST: `chat.isDj == true`。
+- MANAGER: HOSTが管理コマンドで登録した `user.id`。DynamoDBに保存し、HOSTの解除または連携解除で削除する。`chat` には発言者のマネージャー情報がないため、Spoonアプリ上のマネージャー指定とは連動させない。
+- LISTENER: それ以外、および判定できない場合。
+
+### 6.2 入場ウェルカム（任意機能）
+- 既定は無効。有効化には `events.presence` の同意と、DJによるBotのマネージャー指定が必要。
+- 運用手順: 配信中にBotアカウントでDJをフォロー（`POST /v1/live/follow` またはアプリから）→ 配信後にDJがBotを固定マネージャーに指定 → 次回配信から有効。
+- Botがマネージャーでなくてもエラーにはならず、`presence` が届かないだけなので、届かない状態を監視ログで検知できるようにする。
 
 ## 7. OAuth設計
 
 - `scripts/start_oauth.py` がstateと、対応時はPKCEを生成し、DynamoDBへ短期TTL付きで保存して認可URLを表示する。
 - 公開経路は `GET /oauth/callback` のみ。
-- callback Lambdaはstateを条件付きで一回利用にし、codeをtokenへ交換する。
-- TokenはSSM Standard SecureStringへ分離保存する。
-- Fargate Workerが期限前または401時に一度だけrefreshする。同時refreshはDynamoDB lockで直列化する。
-- revoke/解除時はTaskを先に停止し、公式revoke後にSSM tokenとstateを削除する。
+- callback Lambdaはstateを条件付きで一回利用にし、受信後60秒以内にcodeを `POST /v1/oauth/token`（`grant_type=authorization_code`）でtokenへ交換する。
+- OAuth endpointはBasic認証（Client ID/Secret）+ `application/x-www-form-urlencoded`。エラーはRFC 6749の `error` で分岐する（`invalid_grant` は再連携、`invalid_client` は設定不備）。
+- TokenはSSM Standard SecureStringへ分離保存する。access tokenは1時間で失効する。
+- Fargate Workerは `end.reason=TOKEN_EXPIRED` または401で一度だけrefresh（`grant_type=refresh_token`）する。同時refreshはDynamoDB lockで直列化する。refresh tokenがローテーションされる場合に備え、レスポンスに含まれていれば常に上書き保存する。
+- revoke/解除時はTaskを先に停止し、`POST /v1/oauth/revoke` 後にSSM token、state、MANAGER登録を削除する。
 
 ## 8. 地域解決・通信保護
 
@@ -199,38 +223,49 @@ class SpoonRegionConfig:
 |---|---|---|---|
 | `DJ#SINGLE` | `LEASE` | Task ID、lease期限、heartbeat | 短期 |
 | `OAUTH#SINGLE` | `STATE#{hash}` | state、PKCE verifier、used | 数分 |
-| `SESSION#{session}` | `META` | status、Task ID、開始/終了 | 終了後24h |
-| `SESSION#{session}` | `EVENT#{event_id}` | 重複抑止 | 24h |
+| `DJ#SINGLE` | `MANAGER#{user_id_hash}` | HOSTが登録したMANAGERの `user.id` | なし（解除・連携解除で削除） |
+| `DJ#SINGLE` | `CHAT_SUSPEND` | 1日上限の429で止めたチャット送信の再開時刻 | 再開時刻 |
+| `SESSION#{session}` | `META` | status、Task ID、開始/終了、終了reason | 終了後24h |
 | `SESSION#{session}` | `COOLDOWN#{scope}` | 次回送信可能時刻 | 短期 |
-| `SESSION#{session}` | `CHECKPOINT` | 公式resume ID | 24h |
-| `SESSION#{session}` | `SUMMARY` | 非個人別集計 | 24h |
+| `SESSION#{session}` | `SUMMARY` | 非個人別集計（ハート総数・スプーン総数） | 24h |
 
-- 公式event IDがない場合、推測hashを恒久的な冪等キーにしない。
+- ストリームの再開が未提供のため、イベント重複抑止とcheckpointの項目は持たない（公式が再開を提供したら追加する）。
+- MANAGERの `user.id` は照合に必要なため値そのものを保存するが、ログには出さない。
 - TTLは即時削除を保証しないため、期限切れを論理的に除外する。
 - 契約終了時は明示Query/Deleteを実行する。
 
 ## 10. Chat API設計
 
-- `POST /v1/live/chat` をSSEと同じDJ Token・region resolverで呼び出す。
-- request schema、長さ、rate limitは公式spec確定後に型へ固定する。
-- DynamoDBでコマンドscopeごとの5秒cooldownを原子的に取得する。
-- Bot自己投稿をSSE側で除外し、応答ループを防ぐ。
-- 429はRetry-Afterを優先し、POSTの再試行安全性が確認できる場合のみ限定再試行する。
-- chat送信はbest-effort。曲キュー等の重要状態を先に保存する。
+- `POST /v1/live/chat` をSSEと同じDJ Token・region resolverで呼び出す。request項目名は公式spec確認後に型へ固定する。
+- 送信前に空・空白のみを拒否し、絵文字等の非BMP文字を2文字と数える保守的な長さ（UTF-16コード単位相当）で200文字以内に収める。
+- 送信は単一の送信キュー（Worker内）を通し、以下の順で速度を制御する。
+  1. コマンドscopeごとの5秒cooldown（DynamoDB）
+  2. 直近レスポンスの `x-ratelimit-remaining` が0なら `x-ratelimit-replenish-rate` から次の送信可能時刻を計算して待つ
+  3. `CHAT_SUSPEND` 中は送信しない
+- 429の扱い: `OAPI_MNGR_0302` は1〜5秒待って最大2回再送（配信全体の混雑でも発生するため上限を設ける）。detailCodeなし・`Retry-After` なしは指数バックオフ。`Retry-After` ありは1日上限として `CHAT_SUSPEND` に再開時刻を保存し、その間は送信を止める（SSE受信は継続）。
+- 403 `OAPI_MNGR_0208` は30秒後に1回再試行し、続く場合はその配信中の送信を止めて記録する。
+- 400 `0103` / `0108` / `0109` は再送しない（実装または入力の不備として記録）。
+- chat送信はbest-effort。重要状態を先に保存し、エラーの `message` をチャットへ出さない。
+- 再送の安全性（同じ内容が二重投稿されないか）は未確認のため、5xx/timeout時の再送は最大1回に限る。
 
 ## 11. エラー設計
+
+`detailCode` で分岐し、`message` は分岐にも表示にも使わない。ゲートウェイ由来の401/403/429は `detailCode` がないため、ステータスで先に分岐する。
 
 | 条件 | Worker動作 |
 |---|---|
 | OAuth callback invalid state | 400、token交換なし |
-| token exchange/refresh失敗 | 秘密を隠して失敗、Worker停止 |
-| SSE 401 | refresh一度、失敗なら停止 |
-| SSE 403 | permission/region errorで停止 |
-| SSE 429 | Retry-After、上限付き再接続 |
-| SSE 5xx/切断 | jitter backoffで再接続 |
-| SSE malformed/oversize | 当該event破棄または接続再確立 |
-| 未知event | 記録して無視 |
-| Chat 429/5xx/timeout | best-effort失敗、SSE継続 |
+| token endpoint `invalid_grant` | 再連携が必要としてWorker停止 |
+| token endpoint `invalid_client` | 設定不備としてWorker停止・通知 |
+| 401（なし / `0203`） | refresh一度、それでも401なら停止（無限再試行しない） |
+| 403 detailCodeなし | 権限不足。停止して再同意を要求（連携は有効なまま） |
+| 403 `0208` | チャット送信だけ一時停止（§10） |
+| 403 `0209` / `0211` | 停止し、DJにブロック解除を案内 |
+| 404 `0301` | 配信待ち（§5.4） |
+| 429 | §10（チャット）/ §5.4（ストリーム） |
+| 500 `1002` / 502 `2302`・`2303` | 指数バックオフで再試行 |
+| SSE malformed/oversize | 当該frame破棄、繰り返す場合は再接続 |
+| 未知event / 未知field | 無視 |
 | DynamoDB回復不能障害 | 副作用を止めTask終了 |
 
 ## 12. 可観測性
@@ -287,25 +322,25 @@ class SpoonRegionConfig:
 ## 15. テスト戦略
 
 ### 単体
-- SSE chunk/line境界、複数data、heartbeat、id/retry、malformed、oversize。
-- 401 refresh、403停止、429 Retry-After、5xx/切断backoff。
-- event schema、未知event、自己投稿除外。
-- command/RBAC/cooldown。
-- region allowlistとredirect拒否。
-- ログ禁止値の非出力。
+- SSE chunk/line境界、CRLF/LF、`:heartbeat`、`data:` なしframe、id/retry、malformed、oversize。
+- `docs/spoon-api-contract.md` の公式サンプルによる5イベントのparse、nullable項目、未知field・未知event、JSON風message。
+- `end.reason` 4種＋endなし切断の遷移、404待機上限、401 refresh-once、403のdetailCode有無による分岐、500/502 backoff。
+- エラーbodyの `data:` 除去、body空の429、RFC 6749エラー。
+- chat本文の長さ判定（非BMP文字）、空文字拒否、上限ヘッダーによる速度制御、`0302`/`Retry-After`/`0208` の扱い。
+- command/RBAC（`isDj`、MANAGER登録）/cooldown、like集計（`totalAmount`）とdonation集計の単位。
+- region allowlistとredirect拒否、ログ禁止値の非出力。
 
 ### 統合
-- OAuth state一回利用、token保存/refresh/revoke。
+- OAuth state一回利用、60秒以内のcode交換、token保存/refresh（ローテーション有無の両方）/revoke。
 - ECS RunTask排他lease、heartbeat期限、StopTask。
-- DynamoDB event dedupe/checkpoint/TTL。
-- mock SSE serverとの長時間接続・切断・resume。
+- DynamoDB MANAGER登録・削除、CHAT_SUSPEND、TTL。
+- mock SSE serverでの長時間接続、1時間ごとのTOKEN_EXPIRED、RECONNECT、DUPLICATE_CONNECTION、read timeout。
 
-### 公式契約/E2E
-- 公式5event payload。
-- 1 token = 1 DJ、権限別に流れるevent。
-- Bot Account名義chatとlistener notice。
-- Bot投稿のSSE echo有無。
-- live開始/終了、再接続、region不一致。
+### 公式契約/E2E（dev配信）
+- `events.chat` + `chat.send` でのコマンド応答。
+- Bot名義chatとlistener notice、再接続で入場メッセージが再表示されないこと。
+- Botをマネージャー指定したときだけpresenceが届くこと。
+- 実レスポンスの `x-ratelimit-*` 値の記録。
 
 ## 16. 設計判断記録
 
@@ -318,10 +353,16 @@ class SpoonRegionConfig:
 | ADR-005 | ECS Service/NAT/ALB/Fargate SpotをMVPで使わない | Accepted |
 | ADR-006 | OAuth callback/controlはLambda、状態はDynamoDB、秘密はSSM Standard | Accepted |
 | ADR-007 | `POST /v1/live/chat` は同期best-effort | Accepted |
-| ADR-008 | 正式event schema、権限名、resume/rate limit | Pending official spec |
+| ADR-008 | event schema・エラー・rate limitは `docs/spoon-api-contract.md` に従う。再開は未提供のためcheckpoint/重複抑止テーブルを持たない | Accepted |
 | ADR-009 | 正式command catalog | Deferred to user specification |
+| ADR-010 | MANAGERはHOSTがBotの管理コマンドで登録する（Spoonのマネージャー指定とは連動しない） | Proposed |
+| ADR-011 | 入場ウェルカムは既定無効の任意機能（Botのマネージャー指定が必要） | Proposed |
+| ADR-012 | 起動時に配信中でない場合、既定10分待ってTaskを終了する | Proposed |
 
 ## 17. 参照資料
+- [`docs/spoon-api-contract.md`](../../../docs/spoon-api-contract.md)（外部仕様の要約、確度付き）
+- [イベントストリーム（日本語）](https://developers.spooncast.net/docs/ja/api-reference/live-events)
+- [エラーコード（日本語）](https://developers.spooncast.net/docs/ja/api-reference/error-codes)
 - [Spoon Developer Docs](https://developers.spooncast.net/docs/en)
 - [Build a bot](https://developers.spooncast.net/docs/en/getting-started/build-a-bot)
 - [Register an app](https://developers.spooncast.net/docs/en/getting-started/app-registration)
