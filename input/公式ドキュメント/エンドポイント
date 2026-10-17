@@ -1,0 +1,44 @@
+エンドポイント一覧
+ボットが呼び出せるエンドポイントです。それぞれのリクエスト・レスポンスの全文と サンプルは、表の 仕様 リンクにあります。
+
+共通ルール
+リージョン	base URL
+韓国	https://kr-openapi.spooncast.net
+日本	https://jp-openapi.spooncast.net
+自分のアプリが登録されているリージョンのアドレスを使います。 どのリージョンかは DJ の アカウントが決めます。以下のサンプルはすべて $SPOON_BASE_URL と表記しています。
+
+export SPOON_BASE_URL="https://jp-openapi.spooncast.net"
+
+名前	位置	必須	説明
+Authorization	header	✔	Bearer {access_token} です。OAuth の 2 つだけが例外で Basic を使います。
+Content-Type	header		ボディがあるときだけ付けます。ボット API は application/json、OAuth のエンドポイントは application/x-www-form-urlencoded です。
+どの DJ の配信かはトークンが決めます。 パスにもクエリにも DJ を指す場所はありません。 トークンひとつが同意した DJ ひとりなので、どのトークンを使うかがどの配信を扱うかです。
+
+失敗したときの形式と detailCode は エラーコード にあります。 OAuth の 2 つだけ形式が異なります。
+
+認証
+メソッド	パス	何をするか	必要な権限	成功	仕様
+POST	/v1/oauth/token	code をトークンに交換、またはトークンを更新します。	なし(Client Secret 認証)	200	トークン
+POST	/v1/oauth/revoke	発行されたトークンを無効化します。	なし(Client Secret 認証)	200	トークン
+配信取得
+メソッド	パス	何をするか	必要な権限	成功	仕様
+GET	/v1/live	現在の配信のタイトル・開始/終了時刻・リスナー数を取得します。	live.read	200	現在の配信を取得
+GET	/v1/live/listeners	部屋にいるリスナーをカーソルで分けて取得します。	listeners.read	200	リスナー一覧を取得
+GET	/v1/live/fans	この配信のギフトランキング上位 30 名を取得します。	fans.read	200	ファンランキングを取得
+リアルタイム
+メソッド	パス	何をするか	必要な権限	成功	仕様
+GET	/v1/live/events	チャット・入場・ハート・ギフトを SSE で受け取ります。	events.chat · events.presence · events.like · events.donation のうち ひとつ以上(presence は DJ によるマネージャー指定も必要)	200(text/event-stream)	イベントストリーム
+チャット
+メソッド	パス	何をするか	必要な権限	成功	仕様
+POST	/v1/live/chat	ボットアカウント名で配信にチャットを送ります。	chat.send	204	チャットを送る
+フォロー
+メソッド	パス	何をするか	必要な権限	成功	仕様
+POST	/v1/live/follow	ボットアカウントでこの DJ をフォローします。ボットを固定マネージャーにするには先に必要です。	dj.follow	204	DJ をフォロー
+知っておくこと
+配信中でなければ /v1/live で始まるエンドポイントはすべて 404(OAPI_MNGR_0301)です。 エラーではなく状態です。空の一覧や空のレスポンスではなく 404 なので、ボットはこの値だけで 「今配信中か」を判断できます。
+
+配信が始まったかを確認するために GET /v1/live をポーリングする必要はありません。 イベントストリームは配信中でなければ接続前に 404 を返すので、接続を再試行するだけで十分です — 接続ループ を参照してください。
+
+イベントストリームは同じアプリが DJ ひとりにつきひとつだけ開けます。 新しく接続すると前の接続は end DUPLICATE_CONNECTION で閉じます — 同じ DJ への接続はひとつだけ維持します を見てください。
+
+204 を返す呼び出しにはボディがありません。 POST /v1/live/chat・POST /v1/live/follow がそれです。レスポンスボディをパースすると落ちるので、ステータスコードだけを見てください。
