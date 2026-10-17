@@ -1,0 +1,491 @@
+イベントストリーム
+DJ が配信している間の出来事を Server-Sent Events(SSE)でリアルタイムに受け取ります。 ひとつの接続でチャット・入場・ハート・ギフトをまとめて受け取り、同意された権限に該当する イベントだけが流れます。
+
+メソッド・パス	GET /v1/live/events
+必要な権限	events.chat・events.presence・events.like・events.donation の いずれかひとつ以上
+成功レスポンス	200(text/event-stream)
+配信中でないとき	404(OAPI_MNGR_0301)
+export SPOON_BASE_URL="https://jp-openapi.spooncast.net"
+export SPOON_ACCESS_TOKEN="{発行された access token}"
+
+韓国リージョンなら https://kr-openapi.spooncast.net です — リージョン別アドレス。
+
+何が起こるのか
+トークン発行 ─▶ ストリーム接続 ─▶ 配信に入場 ─▶ イベント受信
+                    │                              │
+                    └─ 404: 配信中でない            └─ end: ストリーム終了
+                       バックオフして再試行            接続に戻る
+
+トークンが配信を決めます
+パスにもクエリにも DJ を書く場所がありません。トークン 1 つが同意した DJ 1 人なので、どの トークンを使うかがそのままどの配信を扱うかになります。ボットが他人の配信を指定することはできません。
+
+接続するとボットがその配信に入場します
+単なる購読ではありません。接続した瞬間、ボットアカウントが リスナーとして部屋に入ります。 3 つのことがついてきます。
+
+ボット自身はどこにも出ません。 イベントストリームだけでなく リスナー一覧・ ファンランキング にも出ません。抽選ボットが自分を引くことはありません。
+DJ の制御をそのまま受けます。 強制退出されるとイベントが止まり、チャット禁止・凍結なら 発言が塞がれます。
+受け取れる範囲はボットの部屋での権限に従います。 マネージャーに指定されればマネージャー 等級のメッセージまで届きます。
+接続が切れても入場は維持されます
+ネットワークやデプロイでストリームが切れてもボットは部屋に残ります。再接続すればそのまま続きます。 再接続だけでは入場メッセージは再び表示されません。 サーバーは接続時にボットを部屋に入れますが、すでに入っていればそのまま続くためです。
+
+ボットが部屋から抜けた後に再び接続する(またはチャットを送る)と、新しい入場として扱われ、入場メッセージがもう一度表示されます。 ボットが部屋から抜けるのは 2 つの場合です。
+
+DJ がボットを強制退出させたとき
+入場記録が失効したとき — 最初に入場してから 5 時間で失効します。再入場しても延長されません
+同じ DJ への接続はひとつだけ維持します
+ひとつのアプリが同じ DJ の配信に開いておけるストリームはひとつです。同じ DJ が何度か同意してトークンが複数あっても同じです。
+
+新しい接続が入ると、前の接続は 15 秒以内に閉じます。 前の接続は閉じる前に end フレームで DUPLICATE_CONNECTION を受け取ります。 この理由を受け取ったら 接続し直さないでください。 接続し直すと今度は相手側が閉じ、ふたつの接続が交互に切り合います。
+
+ボットサーバーを複数立てる場合は、ひとりの DJ をひとつのサーバーだけが担当するように分けます。
+
+終わるときは end で理由を知らせて閉じます
+end フレームの後には何も届きません。理由ごとにボットのすることが違います — 配信が 終わったのか、トークンが失効したのか、サーバーがこの接続だけを閉じたのか、同じアプリの別の接続が引き継いだのかを reason が伝えます。
+
+接続するとリスナー向け告知がボット名で送られます
+接続している間、配信に ボットアカウント名でリスナーへの告知 が投稿されます。オフにはできず、ボットのコードですることもありません — いつ、誰に送られるかはリスナーへの告知にあります。
+
+リクエスト
+GET /v1/live/events
+
+ヘッダー
+名前	必須	説明
+Authorization	✔	Bearer {access_token} の形式です。
+Accept	✔	text/event-stream です。
+パスパラメータ・クエリパラメータ・リクエストボディは ありません。 どの DJ の配信かはトークンが決めます。
+
+必要な権限: events.chat・events.presence・events.like・events.donation の いずれかひとつでも あれば接続が開きます。複数あればそれらのイベントが同じ接続で届きます。 同意されていないイベントは除外されるため、接続は正常なのにそのイベントだけ届きません。 ひとつもなければ 403 です。
+
+リクエスト例
+curl -N \
+  -H "Authorization: Bearer $SPOON_ACCESS_TOKEN" \
+  -H "Accept: text/event-stream" \
+  "$SPOON_BASE_URL/v1/live/events"
+
+レスポンス
+200 でストリームが開き、その後 SSE のフレームが続きます。
+
+:heartbeat
+
+id:1788328046114-0
+event:chat
+data:{"user":{"id":"Ab1Cd2Ef3Gh4Ij5Kl6Mn7O","nickname":"スプーンリスナー"},"isDj":false,"message":"こんにちは","sentTime":"2026-09-02T05:47:26.114Z"}
+
+id:1788328052169-1
+event:presence
+data:{"user":{"id":"Pq8Rs9Tu0Vw1Xy2Za3Bc4D","nickname":"ラジオファン"},"type":"JOIN","fanRank":1,"isManager":false,"favoriteTemperature":36.5,"time":"2026-09-02T05:47:32.169Z"}
+
+id:1788328061044-0
+event:like
+data:{"user":{"id":"Pq8Rs9Tu0Vw1Xy2Za3Bc4D","nickname":"ラジオファン"},"type":"PAID","totalAmount":30,"amount":10,"extraAmount":5,"combo":2,"time":"2026-09-02T05:47:41.044Z"}
+
+id:1788328070512-0
+event:donation
+data:{"user":{"id":"Ab1Cd2Ef3Gh4Ij5Kl6Mn7O","nickname":"スプーンリスナー"},"amount":300,"message":"応援しています","time":"2026-09-02T05:47:50.512Z"}
+
+event:end
+data:{"reason":"LIVE_ENDED"}
+
+
+イベント	必要な権限	いつ届くか	ペイロード
+chat	events.chat	リスナーまたは DJ がチャットを打ったとき	chat
+presence	events.presence	リスナーが配信に入場したとき	presence
+like	events.like	リスナーがハートを送ったとき	like
+donation	events.donation	リスナーがギフトを送ったとき	donation
+end	なし	ストリームが終わるとき。このフレームの後には何も届きません	end
+id: は {epochMillis}-{offset} の形式です。現在は再開に使われませんが、後で Last-Event-ID による再開を開くときに契約が壊れないよう、最初から付いています。
+
+ハートビート
+:heartbeat
+
+: で始まる SSE の comment 行が既定で 15 秒ごとに届きます。チャットがなくても接続を 維持することだけが目的です。
+
+標準の EventSource はこの行を自動的に無視するので、気にする必要はありません。自分で パーサーを書くときだけ、data: がないフレームとして除外してください。
+
+イベントを受け取る
+以下のサンプルを保存して実行すると、4 つのイベントがすべてコンソールに表示されます。各 イベント節のコードはこの handlers に入れます。
+
+// stream.ts — node --experimental-strip-types stream.ts
+
+interface EventUser {
+  id: string;
+  nickname: string | null;
+}
+
+interface ChatEvent {
+  user: EventUser;
+  isDj: boolean;
+  message: string;
+  sentTime: string;
+}
+
+interface PresenceEvent {
+  user: EventUser;
+  type: 'JOIN';
+  fanRank: number | null;
+  isManager: boolean;
+  favoriteTemperature: number | null;
+  time: string;
+}
+
+interface LikeEvent {
+  user: EventUser;
+  type: 'FREE' | 'PAID';
+  totalAmount: number;
+  amount: number;
+  extraAmount: number;
+  combo: number | null;
+  time: string;
+}
+
+interface DonationEvent {
+  user: EventUser;
+  amount: number;
+  message: string | null;
+  time: string;
+}
+
+interface StreamEndEvent {
+  reason: 'LIVE_ENDED' | 'TOKEN_EXPIRED' | 'RECONNECT' | 'DUPLICATE_CONNECTION';
+}
+
+const res = await fetch(`${process.env.SPOON_BASE_URL}/v1/live/events`, {
+  headers: {
+    Authorization: `Bearer ${process.env.SPOON_ACCESS_TOKEN}`,
+    Accept: 'text/event-stream',
+  },
+});
+if (!res.ok || !res.body) throw new Error(`ストリームを開けませんでした: ${res.status}`);
+
+const handlers: Record<string, (d: any) => void> = {
+  chat: (d: ChatEvent) => console.log(`${d.user.nickname ?? '匿名'}: ${d.message}`),
+  presence: (d: PresenceEvent) => console.log(`${d.user.nickname ?? '匿名'} 入場`),
+  like: (d: LikeEvent) => console.log(`ハート ${d.totalAmount}個 (${d.type})`),
+  donation: (d: DonationEvent) => console.log(`ギフト ${d.amount} スプーン`),
+  end: (d: StreamEndEvent) => console.log(`ストリーム終了: ${d.reason}`),
+};
+
+const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+let buffer = '';
+
+for (;;) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buffer += value;
+
+  const frames = buffer.split('\n\n');
+  buffer = frames.pop() ?? '';
+
+  for (const frame of frames) {
+    const lines = frame.split('\n');
+    const event = lines.find((l) => l.startsWith('event:'))?.slice(6);
+    const data = lines.find((l) => l.startsWith('data:'))?.slice(5);
+    if (!event || !data) continue;   // `:heartbeat` には data がありません
+    handlers[event]?.(JSON.parse(data));
+  }
+}
+
+node --experimental-strip-types stream.ts
+
+node --experimental-strip-types stream.ts
+
+ブラウザの EventSource では接続できません。 トークンを Authorization ヘッダーで送りますが EventSource はヘッダーを付けられません。サーバーで上のコードを動かし、結果だけをブラウザへ 中継します。
+
+イベントペイロード
+すべてのイベントのユーザー情報は同じ形です。
+
+フィールド	型	null	説明
+user.id	string	いいえ	その人を指す値です。暗号化した値です。
+user.nickname	string	はい	ニックネームです。空文字列ではなく null が来ます。
+id で人を識別します
+id はその人の一意な識別子です。同じ人なら常に同じ値なので、出席・累計・ランキングのキーとして 使います。nickname は変わり、重複するので識別に使わないでください。
+
+値の範囲は自分のボットとその DJ の組み合わせです。DJ が連携を解除して再度同意しても維持されます。
+
+この id は リスナー一覧・ファンランキング の id と 同じ値 です。
+
+chat — チャット
+リスナーのチャットと DJ のクイックメッセージをリアルタイムに受け取ります。必要な権限: events.chat
+
+リスナーの発言:
+
+{
+  "user": { "id": "Ab1Cd2Ef3Gh4Ij5Kl6Mn7O", "nickname": "スプーンリスナー" },
+  "isDj": false,
+  "message": "こんにちは",
+  "sentTime": "2026-09-02T05:47:26.114Z"
+}
+
+DJ の発言 — isDj が true です:
+
+{
+  "user": { "id": "Uv4Wx5Yz6Ab7Cd8Ef9Gh0I", "nickname": "スプーンDJ" },
+  "isDj": true,
+  "message": "お便り送ってね！",
+  "sentTime": "2026-09-02T05:47:31.802Z"
+}
+
+フィールド	型	null	説明
+user.id	string	いいえ	発言した人です。暗号化した値です。
+user.nickname	string	はい	ニックネームです。
+isDj	boolean	いいえ	この発言が DJ 本人のものかを示します。user の中ではなく最上位にあります。
+message	string	いいえ	チャットの原文です。
+sentTime	string	いいえ	送信時刻です。ISO-8601 UTC(Z)です。
+// stream.ts — handlers に `chat: onChat` として入れます
+const counts = new Map();
+
+const onChat = (d: ChatEvent) => {
+  if (d.isDj) return;                    // DJ は集計から外す
+  const n = (counts.get(d.user.id) ?? 0) + 1;
+  counts.set(d.user.id, n);              // キーは nickname ではなく id
+  console.log(`${d.user.nickname ?? '匿名'}: ${d.message} (${n}回目)`);
+};
+
+isDj を見ないと DJ が自分の配信でポイントを稼ぎます。 DJ もチャットを打ち、クイック メッセージを送ります。出席やランキングの集計から外さないと、DJ が自分のランキング 1 位に なります。暗号化された id からは誰が DJ か分からず、ニックネームの比較も答えではないので、 このフィールドで分けます。
+
+isDj は chat にだけあります。 user の中ではなくイベントの最上位です。他のイベントには このフィールド自体がありません — 原本が与えないので、常に false の値を作って送りません。
+
+nickname が null のことがあります。 空文字列ではなく null です。 d.user.nickname ?? '匿名' のように受けます。
+
+message が JSON のように見えても文字列です。 リスナーは {"a":1} を打てます。パースしないでください。
+
+チャットを禁止されたリスナーは発言そのものができません。 そのため、そのリスナーの chat イベントはそもそも作られません — こちらで除外しているのではなく、作られるものが ありません。禁止は その配信の中でのみ 有効で、次の配信には引き継がれず、そのときは 同じ人のチャットがまた流れます。
+
+ギフトメッセージ・運営のお知らせ・他のシステム発言は届きません。ボット自身の発言も戻りません。
+
+presence — 入場
+リスナーが配信に入場すると受け取ります。必要な権限: events.presence
+
+{
+  "user": { "id": "Pq8Rs9Tu0Vw1Xy2Za3Bc4D", "nickname": "ラジオファン" },
+  "type": "JOIN",
+  "fanRank": 1,
+  "isManager": false,
+  "favoriteTemperature": 36.5,
+  "time": "2026-09-02T05:47:32.169Z"
+}
+
+フィールド	型	null	説明
+user.id	string	いいえ	入場した人です。暗号化した値です。
+user.nickname	string	はい	ニックネームです。
+type	string	いいえ	現在は JOIN のみ届きます。
+fanRank	number	はい	この配信のギフトランキング順位です。ギフト履歴がなければ null です。
+isManager	boolean	いいえ	DJ がこのリスナーをマネージャーに指定しているかを示します。
+favoriteTemperature	number	はい	愛聴温度です。配信が変わっても引き継がれる累積の関係指標なので、常連を見分けるのに使います。
+time	string	いいえ	入場時刻です。ISO-8601 UTC(Z)です。
+入場の時点でランキング・マネージャー・愛聴温度が一緒に届きます。「1 位のファンが入場！」や 「常連へのあいさつ」を作るのに ファンランキングを取得 を別途呼ぶ必要はありません。
+
+// stream.ts — handlers に `presence: onPresence` として入れます
+const greeted = new Set();
+
+const onPresence = (d: PresenceEvent) => {
+  if (greeted.has(d.user.id)) return;    // 再入場に二度あいさつしない
+  greeted.add(d.user.id);
+
+  const name = d.user.nickname ?? '匿名';
+  if (d.fanRank === 1) console.log(`${name}さん、1 位のファンが入場！`);
+  else if (d.isManager) console.log(`マネージャーの ${name}さん、いらっしゃい！`);
+  else if (d.favoriteTemperature !== null && d.favoriteTemperature >= 36.5)
+    console.log(`常連の ${name}さん、お久しぶりです！`);
+  else console.log(`${name}さん、いらっしゃい！`);
+};
+
+ボットがマネージャーでないとこのイベントは流れません。 ボットアカウントを固定マネージャー (推奨。ボットアカウントが先に DJ をフォローしている必要があります)か、この配信のマネージャーに指定します。指定がないとエラーには なりません — ストリームは 200 で開き chat も届くのに、presence だけが 1 件も届きません。 手順は 下 にあります。配信の途中で指定・解除しても、 接続し直さずに数秒以内に反映されます。
+
+愛聴温度のしきい値はボットが決めます。 サーバーが「何度から常連か」を決めてはくれません。 null のときは判定しないのが正解です。
+
+退場は届きません。 type は現在 JOIN のみです。「今誰が部屋にいるか」が必要なら リスナー一覧を取得 で取得します。
+
+同じ人が出て入るとまた届きます。上のコードのように id で重複を除きます。
+
+like — ハート
+リスナーがハートを送ると受け取ります。必要な権限: events.like
+
+{
+  "user": { "id": "Pq8Rs9Tu0Vw1Xy2Za3Bc4D", "nickname": "ラジオファン" },
+  "type": "PAID",
+  "totalAmount": 30,
+  "amount": 10,
+  "extraAmount": 5,
+  "combo": 2,
+  "time": "2026-09-03T02:59:03.249Z"
+}
+
+フィールド	型	null	説明
+user.id	string	いいえ	送った人です。暗号化した値です。
+user.nickname	string	はい	ニックネームです。
+type	string	いいえ	お金がかかったかを示します。PAID はスプーンを使ったアイテムハート、FREE はそれ以外です。
+totalAmount	number	いいえ	今回配信に加算されたハートの総数 です。(amount + extraAmount) × combo です。
+amount	number	いいえ	アイテム 1 つが与えるハート数です。
+extraAmount	number	いいえ	ブーストアイテムで加算されたハート数です。なければ 0 です。
+combo	number	はい	重ねて使った回数です。無料ハートは null です。
+time	string	いいえ	送信時刻です。ISO-8601 UTC(Z)です。
+FREE は 2 種類です — リスナーがタップで送る無料ハートと、ハートが 0 個で残高も減らない アイテムです。タップで送る無料ハートは combo が null です。
+
+FREE もハートは加算されます。 type は反応の強さを分ける値であって、集計から外す値ではありません。
+
+// stream.ts — handlers に `like: onLike` として入れます
+let hearts = 0;
+
+const onLike = (d: LikeEvent) => {
+  hearts += d.totalAmount;               // 集計は totalAmount — amount だけだとコンボとブーストが抜ける
+  if (d.type === 'PAID') {
+    console.log(`${d.user.nickname ?? '匿名'}さん、ハート ${d.totalAmount}個ありがとうございます！`);
+  }
+  // FREE は反応せず数えるだけ
+};
+
+
+FREE にいちいち反応すると配信が騒がしくなります。 タップで送るハートは降り続け、 PAID はリスナーがアイテムを使ったもので重みが違います。通常は PAID にだけ 反応し、FREE は数えるだけにします。FREE にも反応するならクールダウンを置いてください。
+
+集計には totalAmount を使います。 amount だけを足すとコンボとブーストが抜け、実際より 少なく数えます。totalAmount は配信サーバーが配信のハート数に加える値と同じです。
+
+like.amount はハート数で donation.amount はスプーンです。 同じ名前で 単位が違い、計算式も違います。ハートは (amount + extraAmount) × combo である totalAmount を使い、 ギフトの amount はすでに合計なので再度掛けてはいけません。
+
+combo は無料ハートでは null。 です。そのまま計算に入れると落ちます。
+
+donation — ギフト
+リスナーがギフトを送ると受け取ります。必要な権限: events.donation
+
+{
+  "user": { "id": "Ab1Cd2Ef3Gh4Ij5Kl6Mn7O", "nickname": "スプーンリスナー" },
+  "amount": 300,
+  "message": "応援しています",
+  "time": "2026-09-02T05:47:50.512Z"
+}
+
+フィールド	型	null	説明
+user.id	string	いいえ	送った人です。暗号化した値です。
+user.nickname	string	はい	ニックネームです。
+amount	number	いいえ	今回のギフトの 合計スプーン です。すでに掛け算済みです。
+message	string	はい	一緒に届いた一言です。ない場合の方が多いです。
+time	string	いいえ	送信時刻です。ISO-8601 UTC(Z)です。
+// stream.ts — handlers に `donation: onDonation` として入れます
+const spoons = new Map();
+
+const onDonation = (d: DonationEvent) => {
+  const total = (spoons.get(d.user.id) ?? 0) + d.amount;
+  spoons.set(d.user.id, total);
+  const note = d.message ?? '';          // null が既定なので ?? で受ける
+  console.log(`${d.user.nickname ?? '匿名'}さん、${d.amount} スプーンありがとうございます！ ${note}`);
+};
+
+amount はすでに掛け算済みの合計スプーンです。 単価ではないので、個数を再度掛けないで ください。like.amount はスプーンではなくハート数です — 同じ名前でも単位が違います。
+
+message は null の場合の方が多いです。 空文字列ではないので d.message.trim() は落ちます。
+
+配信全体の累計ギフトランキングはここから自分で積み上げます。 ファンランキングを取得 は 今部屋にいる人 が対象なので、ギフトを送って 退出した人は外れます。
+
+end — ストリーム終了
+ストリームが なぜ 終わったかを知らせて閉じます。このフレームの後には何も届きません。 権限は不要です — スコープが狭いボットも、接続が終わった理由は知る必要があります。
+
+{ "reason": "LIVE_ENDED" }
+
+フィールド	型	null	説明
+reason	string	いいえ	LIVE_ENDED・TOKEN_EXPIRED・RECONNECT・DUPLICATE_CONNECTION のいずれかです。
+reason	何が起きたか	どうするか
+LIVE_ENDED	配信が終了しました。	再接続しません。次の配信を待ってから接続します。
+TOKEN_EXPIRED	access token が失効しました。	トークンを更新して すぐに 接続し直します。
+RECONNECT	サーバーがこの接続だけを閉じました。配信は続いています。	バックオフなしですぐに 接続し直します。トークンはそのまま使います。
+DUPLICATE_CONNECTION	同じアプリが同じ DJ に新しく接続したため、この接続を閉じました。	接続し直しません。 新しい接続が引き継いでいます。
+RECONNECT は 配信もトークンも問題ありません。 更新するものはなく、バックオフを置いた 分だけイベントを取りこぼします。
+
+このフレームが届かないのは ネットワーク で切れたときだけです。そのときはバックオフを 置いて接続し直します。
+
+// stream.ts — handlers に `end: onEnd` として入れます。
+// 理由ごとに対応が違います — ここでは次に何をするかだけを決め、再接続ループは外で回します
+let next = null;
+
+const onEnd = (d: StreamEndEvent) => {
+  if (d.reason === 'LIVE_ENDED') next = 'wait';             // 配信終了。バックオフしてから接続
+  else if (d.reason === 'TOKEN_EXPIRED') next = 'refresh';  // トークンを更新してすぐ接続
+  else if (d.reason === 'DUPLICATE_CONNECTION') next = 'stop'; // 別の接続が引き継ぎました。接続し直しません
+  else next = 'now';                                        // RECONNECT — バックオフなしで接続
+  console.log(`ストリーム終了: ${d.reason} → ${next}`);
+};
+
+
+ボットをマネージャーに指定する方法
+マネージャー指定は DJ が Spoon アプリで行います。ボットが API で要求することはできません。
+
+運用するボットは固定マネージャーに指定することをおすすめします。 DJ がボットアカウントを固定マネージャーに指定すれば、配信のたびに指定し直す必要がありません。
+
+ボットアカウントが先に DJ をフォローしている必要があります。 配信中に DJ をフォロー(POST /v1/live/follow)を一度呼べば済みます。ボットアカウントで Spoon アプリにログインして直接フォローしてもかまいません。
+固定マネージャーは DJ が配信中は変更できません。 フォロー API は逆に配信中にしか使えないので、配信中にフォローしておき、配信が終わってから DJ が指定すれば次の配信から適用されます。
+この配信の途中でマネージャーに指定・解除すると、数秒以内に反映されます。ボットが接続し直す必要はありません。
+この配信だけ指定するときは、次の手順で行います。
+
+まずボットを配信に入れます。 配信中の DJ に対してボットがイベントストリームへ接続すると、 ボットアカウントがリスナーとして入場します。部屋にいる人だけがマネージャーに指定できます。
+DJ が配信画面で リスナー一覧を開き、ボットアカウントを選びます。
+プロフィールで [マネージャー指定] を押します。ひとつの配信でマネージャーは 3 名まで指定できます。
+数秒以内に反映されます。 接続し直さなくても、その接続で presence が届き始めます。 マネージャーを解除すると同じ時間内に止まります。
+指定が必要なのは presence イベントです。
+
+届かないもの
+このストリームは ドキュメントに記載されたイベントだけ を送出します。配信サーバーに 新しいイベントが増えても、自動的に流れ出ることはありません。
+
+個人メッセージ(DM)	特定のリスナーにだけ届くメッセージです。決して届きません。
+マネージャー等級以上のメッセージ	ボットがマネージャーでなければ届きません。Spoon アプリと同じルールです。
+ボット自身の発言・入場	自分が送ったものは自分に戻りません。エコーループを防ぐためです。同じ配信の 他のボットは見えます。
+システムイベント	配信メタの更新、スタジオ通知などは届きません。
+受け取れる範囲はボットの部屋での権限に従います。 一般メンバーとして入場していれば リスナーがアプリ画面で見るものまで、DJ がマネージャーに指定していればマネージャー等級の メッセージまで届きます。個人メッセージ(DM)はどちらの場合も届きません。
+
+接続ループ
+配信が始まったかを別途確認する必要はありません。配信中でなければ、ストリームのエンドポイントが 接続前に 404 を返します。 ボットのループはこれひとつで足ります。
+
+ストリームに接続を試みる
+  ├ 404 (OAPI_MNGR_0301) → 配信中ではありません。バックオフして再試行
+  └ 200 → イベントを受信 … end{LIVE_ENDED}  → バックオフしてから接続の試行に戻る
+                          end{RECONNECT} → バックオフなしですぐ接続の試行に戻る
+                          end{DUPLICATE_CONNECTION} → 停止。別の接続が引き継いでいます
+
+GET /v1/live で先に確認してから接続すると往復が 2 回になり、確認と接続の間に配信が終われば どのみち 404 を受け取ります。live.read なしで events.chat だけ同意されたボットでも、この ループはそのまま動きます。
+
+404 のたびに即座に再試行しないでください。 数秒の間隔を置きます — 再試行のたびにトークン 検証が走りますが、このエンドポイントには呼び出し上限がかかっていません。
+
+GET /v1/live は配信の 情報 が必要なときに呼びます — タイトル・カテゴリ・リスナー数・isChatFrozen などです。
+
+再接続の方針
+ストリームは長く生きますが永遠ではありません。デプロイで Pod が再起動すると、開いていた 接続はすべて閉じます。再接続は選択ではなく必須です。
+
+end(LIVE_ENDED)    → 配信が終了しました。バックオフして接続を試み直します
+end(TOKEN_EXPIRED) → トークンを更新してすぐに接続し直します
+end(RECONNECT)     → サーバーが接続だけを閉じました。バックオフなしですぐに接続し直します
+end(DUPLICATE_CONNECTION) → 同じアプリの別の接続が引き継ぎました。接続し直しません
+理由なく切断        → 指数バックオフ(1 秒 → 2 秒 → 4 秒 → … 最大 30 秒)+ jitter で再接続します
+404                → 配信中ではありません。エラーではなく状態なのでバックオフして接続し直します
+401                → 再連携が必要です。人の介入が要るので無限リトライはしません
+403(detailCode なし) → 権限が足りません。再同意だけで済み、連携は生きています
+403 OAPI_MNGR_0209  → DJ がボットをブロックしました。再試行では解決しないので止めて DJ に案内します
+
+401 と 403 は別々に処理します。 401 は DJ が連携し直さないと解消せず、権限不足の 403 は権限を追加で得るだけで済みます。 まとめて扱うと、問題のない連携まで切ってしまいます。また 401 を無限にリトライすると、 永遠に失敗しながら呼び出し上限だけを消費します。
+
+常駐ボットが 1 時間に 1 回 TOKEN_EXPIRED を受け取るのは正常です。 ストリームは接続に使った access token の 失効時刻(発行から 1 時間)に終わります。事前に更新しておいても、すでに開いているストリームはその時刻に終わるので、 TOKEN_EXPIRED を受け取ったら refresh token で更新してすぐに接続し直します。 この再接続でも入場メッセージは再び表示されません。
+
+再接続しても、切れていた間のチャットは受け取れません。Last-Event-ID による再開はまだ 開いていません。
+
+よくある間違い
+: で始まる行をパースしようとしないでください。 ハートビートです。data: がないフレームは 読み飛ばします。
+
+時刻の小数部の桁数を固定しないでください。 ISO-8601 のパーサーを使い、 %Y-%m-%dT%H:%M:%S.%fZ のような書式文字列は避けます。
+
+圧縮を期待しないでください。 Accept-Encoding: gzip を送ってもこのエンドポイントは 圧縮しません。バッファにたまってから出るとリアルタイムでなくなるからです。
+
+ストリームが終わっても配信が終わったとは限りません。 end フレームの reason を見てください。
+
+入場メッセージが繰り返されるのは再接続のせいではありません。 再接続だけでは入場メッセージは再び表示されません。 ボットが部屋から抜けて入り直したということなので、次を確認します。
+
+DJ がボットを強制退出させていないか
+最初に入場してから 5 時間が経ち、入場記録が失効していないか
+フィールドごとの落とし穴(nickname の null、ハート集計に totalAmount を使うこと)は リアルタイムイベントの権限 の各節にあります。
+
+エラー
+HTTP	detailCode	何が起きたか	どうするか
+401	なし	トークンがないか無効です。失効・破棄・DJ の連携解除・アプリ停止がすべてここに入ります。	DJ に再連携を案内します。
+403	なし	events. で始まる権限がひとつもありません。	権限を追加して再同意を得ます。
+403	OAPI_MNGR_0209	配信に入場できません。DJ がボットをブロックした可能性があります。	再試行では解決しません。DJ に案内します。
+404	OAPI_MNGR_0301	配信中ではありません。	バックオフして接続し直します。
+502	OAPI_MNGR_2302	配信サーバーのエラーです。	バックオフしてから再試行します。
+ストリームが開く前のエラーは SSE フレームで届きます。 このエンドポイントは text/event-stream で応答するため、接続に失敗してもボディが data: で始まります。ボディをそのまま JSON としてパースすると落ちます。 HTTP ステータスコードで判別し、ボディが必要なら data: を取り除いてからパースします。
+
+この表にない状態も返ることがあります。 誤ったメソッド・Content-Type(400・405・415、 OAPI_MNGR_0103)・呼び出し上限(429、ボディなし)・サーバーエラー(500、OAPI_MNGR_1002)は すべてのエンドポイントに共通 です — エラーコード にあります。
