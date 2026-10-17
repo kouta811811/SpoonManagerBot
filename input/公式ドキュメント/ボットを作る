@@ -1,0 +1,167 @@
+ボットを作る
+このガイドに沿って進めると、DJ の配信チャットをリアルタイムで受け取り、ボット名で チャットを送るボットを作れます。同意を得るところから最初の発言までひと続きです。
+
+用意するもの
+アプリ登録 で受け取った Client ID と Client Secret
+アプリに登録した ログインリダイレクト URL
+アプリに登録した 権限(scope) — このガイドでは events.chat と chat.send を使います
+Node.js 22.6 以上 — サンプルは TypeScript なので --experimental-strip-types が必要です
+API アドレス
+以下のサンプルでは base URL を $SPOON_BASE_URL と表記しています。連携するリージョンの アドレスを設定して実行してください。
+
+export SPOON_BASE_URL="https://jp-openapi.spooncast.net"
+
+リージョン	base URL
+韓国	https://kr-openapi.spooncast.net
+日本	https://jp-openapi.spooncast.net
+自分のアプリが登録されているリージョンのアドレスを使います。 どのリージョンかは DJ の アカウントが決めるため、別のリージョンのアドレスで呼ぶとその DJ の配信は見つかりません。
+
+1. DJ の同意を得る
+DJ のブラウザを同意画面へ送り、戻ってきた code を受け取ります。詳しいルールは ユーザーの同意を得る にあります。
+
+https://developers.spooncast.net/jp/oauth/authorize
+  ?response_type=code
+  &client_id={Client ID}
+  &redirect_uri={ログインリダイレクト URL}
+  &scope=events.chat%20chat.send
+  &state={自分で作ったランダムな値}
+
+authorize アドレスにもリージョンが入ります。 韓国は /kr、日本は /jp です。
+
+DJ が許可すると、リダイレクト URL に code が付いて戻ります。この値は 60 秒以内に 使う必要があります。
+
+2. code をトークンに交換する
+受け取った code を access token に交換します。Client Secret を使う呼び出しなので、 必ずサーバーから呼びます。
+
+curl -X POST "$SPOON_BASE_URL/v1/oauth/token" \
+  -u "{Client ID}:{Client Secret}" \
+  -d "grant_type=authorization_code" \
+  -d "code={受け取った code}" \
+  -d "redirect_uri={ログインリダイレクト URL}"
+
+{
+  "access_token": "at_3f9c1e7b8d2a4056...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "rt_7b2e5a9c4f10d386...",
+  "scope": "events.chat chat.send"
+}
+
+値	有効期間	知っておくこと
+access_token	1 時間	すべてのボット API 呼び出しに Authorization: Bearer として付けます。
+refresh_token	30 日	新しい access token を受け取るときに使います。
+常駐ボットは必ず更新を実装します。 access token が失効すると、開いていたイベントストリームも一緒に終了します。失効の直前ではなく 余裕をもって(例: 失効の 5 分前)。 更新し、更新結果は再起動しても残るように保存します。 メモリにだけ置くと、プロセスを立ち上げ直すたびに DJ から同意を取り直すことになります。 事前に更新しても、すでに開いているストリームは接続に使ったトークンの失効時刻に終わるので、TOKEN_EXPIRED を受け取ったら更新してすぐに接続し直します。
+
+更新すると refresh token も新しい値に変わります。 レスポンスの新しい refresh_token を 保存しないと次の更新で失敗します — 詳しくは トークン にあります。
+
+更新は同じエンドポイントに grant_type=refresh_token で呼びます。
+
+curl -X POST "$SPOON_BASE_URL/v1/oauth/token" \
+  -u "{Client ID}:{Client Secret}" \
+  -d "grant_type=refresh_token" \
+  -d "refresh_token={受け取った refresh_token}"
+
+受け取ったトークンも環境変数に入れます。
+
+export SPOON_ACCESS_TOKEN="{access_token}"
+
+3. イベントストリームに接続する
+接続するとリスナーへの告知が送られます
+接続した瞬間に配信へ ボット名でリスナーへの告知 が投稿されます。ボットのコードですることはありません — リスナーへの告知を参照してください。
+
+DJ が配信中なら、チャットがすぐに流れ込んできます。まず curl で確認します。
+
+curl -N \
+  -H "Authorization: Bearer {access_token}" \
+  -H "Accept: text/event-stream" \
+  "$SPOON_BASE_URL/v1/live/events"
+
+:heartbeat
+
+id:1788328046114-0
+event:chat
+data:{"user":{"id":"Ab1Cd2Ef3Gh4Ij5Kl6Mn7O","nickname":"スプーンリスナー"},"isDj":false,"message":"こんにちは","sentTime":"2026-09-02T05:47:26.114Z"}
+
+
+配信中でない場合は 404 が返ります。エラーではなく状態なので、DJ が配信を始めるまで 待ってから接続し直します。
+
+以下は同じことをする Node のサンプルです。そのまま保存して実行すると、チャットが コンソールに表示されます。
+
+// bot.ts — node --experimental-strip-types bot.ts
+
+interface EventUser {
+  id: string;
+  nickname: string | null;
+}
+
+interface ChatEvent {
+  user: EventUser;
+  isDj: boolean;
+  message: string;
+  sentTime: string;
+}
+
+const BASE = process.env.SPOON_BASE_URL;
+const TOKEN = process.env.SPOON_ACCESS_TOKEN;
+
+const res = await fetch(`${BASE}/v1/live/events`, {
+  headers: { Authorization: `Bearer ${TOKEN}`, Accept: 'text/event-stream' },
+});
+
+if (!res.ok || !res.body) throw new Error(`ストリームを開けませんでした: ${res.status}`);
+
+const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+let buffer = '';
+
+for (;;) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buffer += value;
+
+  // SSE は空行でイベントを区切ります。最後の断片はまだ終わっていないのでバッファに残します
+  const frames = buffer.split('\n\n');
+  buffer = frames.pop() ?? '';
+
+  for (const frame of frames) {
+    const lines = frame.split('\n');
+    const event = lines.find((l) => l.startsWith('event:'))?.slice(6);
+    const data = lines.find((l) => l.startsWith('data:'))?.slice(5);
+    if (!data) continue; // `:heartbeat` のように data がないフレームです
+
+    if (event === 'chat') {
+      const chat = JSON.parse(data) as ChatEvent;
+      console.log(`${chat.user.nickname ?? '匿名'}: ${chat.message}`);
+    }
+  }
+}
+
+node --experimental-strip-types bot.ts
+
+ブラウザの EventSource では接続できません。 トークンを Authorization ヘッダーで送りますが、EventSource はヘッダーを付けられません。 サーバーで上のコードを動かし、結果だけをブラウザへ中継してください。
+
+4. チャットを送る
+ボットアカウント名でチャットを送ります。成功するとボディなしで 204 が返ります。
+
+curl -i -X POST "$SPOON_BASE_URL/v1/live/chat" \
+  -H "Authorization: Bearer {access_token}" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"こんにちは！ボットからのごあいさつです"}'
+
+HTTP/2 204
+
+うまくいったか確認する
+DJ が配信中の状態で、以下がすべて当てはまればボットは正しくつながっています。
+
+ストリーム接続が 200 で開き、15 秒ごとに :heartbeat の行が届きます。
+リスナーがチャットを打つと、event: chat のフレームがすぐ届きます。
+POST /v1/live/chat が 204 を返し、Spoon アプリのチャット欄に ボットアカウント名でメッセージが表示されます。
+ボットが送ったメッセージは自分のストリームには 戻ってきません — エコーループを防ぐルールです。
+ストリームを切って接続し直しても、入場メッセージは再び表示されません。 ボットが部屋に残っているためです。
+次のステップ
+トークン — 発行・更新・失効の全仕様です。
+API リファレンス — 各エンドポイントのリクエスト・レスポンス・サンプルです。
+配信取得の権限 — 現在の配信・リスナー一覧・ファンランキングです。
+イベントストリーム — イベントの種類、 ペイロードのスキーマ、再接続の方針を確認します。
+チャットを送る — 長さ制限と送信失敗の扱いを確認します。
+権限を選ぶ — どの権限が何を与えるか確認します。
+エラーコード — どの応答にどう対応するか確認します。
