@@ -26,6 +26,11 @@ Spoonにおけるマネージャーのボット機能を作成するためのリ
 
 お礼はBot全体で15秒に1通です。その間に届いた人はまとめて1通で送ります。
 
+## 運用者向け
+
+AWSへのデプロイ、Spoon Developer Appの登録、DJの連携、配信ごとの起動・停止は
+[`infrastructure/README.md`](infrastructure/README.md) を参照してください。
+
 ## 開発
 
 ```bash

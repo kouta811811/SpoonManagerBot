@@ -1,6 +1,6 @@
 # SPOON配信マネージャーBot 実装計画
 
-> Spoon公式のSSE方式へ改訂済み。AWSはdev基盤（`infrastructure/foundation.yaml`）まで。アプリはお礼機能（R13）とその土台（イベントモデル、チャット送信、送信キュー）を実装済みで、SSE接続・OAuth・Workerは未実装。フェーズ0完了前に本番SSEへ接続しない。
+> Spoon公式のSSE方式へ改訂済み。dev向けに、SSE受信・再接続、OAuth、Worker、Control Lambda、OAuth callback、コンテナ、CloudFormation（foundation・app）、OIDCデプロイを実装済み（未デプロイ）。運用手順は `infrastructure/README.md`。Spoonの審査・運用承認前に本番へ接続しない。
 
 ## フェーズ0: 公式契約の確定
 
@@ -40,76 +40,79 @@
 
 ## フェーズ1: プロジェクト・IaC基盤
 
-- [ ] 1.1 Python 3.12プロジェクトを作成する
+- [x] 1.1 Python 3.12プロジェクトを作成する
   - [x] `pyproject.toml`（src レイアウト、ruff・mypy strict・pytest）、domain / thanks / chat / spoon / bot / observability の分離。
-  - [ ] 残り: Lambda entrypoint、Worker、設定の読み込み。
+  - [x] Lambda entrypoint（`oauth_callback.py`・`control.py`）、Worker（`worker.py`）、設定の読み込み（`config.py`）。
   - 対応: NFR5
 
-- [ ] 1.2 コンテナを作成する
+- [x] 1.2 コンテナを作成する
+  - `Dockerfile`: Lambda Python 3.12 arm64 ベースの1イメージをWorkerとLambdaで共用。Workerは non-root（UID 1000）・read-only root・全capability削除。digest固定でデプロイ。
   - Linux/ARM64、non-root、read-only filesystem、digest固定可能なimageを作る。
   - credentialをimageへ含めない。
   - 対応: R3, NFR3
 
-- [ ] 1.3 SAM/CloudFormationを作成する
+- [x] 1.3 SAM/CloudFormationを作成する
+  - `foundation.yaml` にECRを追加、`app.yaml` にTask定義・OAuth callback（HTTP API + Lambda）・Control Lambdaを定義した（SAMではなく素のCloudFormation）。
   - OAuth callback HTTP API/Lambda、Control Lambda、ECS cluster/task definition、public subnet/IGW、DynamoDB、SSM権限、7日ログを定義する。
   - ECS Service、NAT Gateway、ALB、inbound ruleを作らない。
   - 対応: R2, R3, R12, NFR3, NFR4
 
 - [ ] 1.4 CIを作成する
   - [x] ruff、mypy、pytest のジョブを追加した。
-  - [ ] 残り: SAM validate、container/secret/dependency scan。
+  - [x] arm64イメージのビルドとimportのスモークテスト、guardrailsの対象に `src` を追加した。
+  - [ ] 残り: container/secret/dependency scan（ECRのscan on pushは有効）。
   - main反映だけではFargate Taskを起動しない。
   - 対応: R12, NFR5
 
 ## フェーズ2: OAuth・地域・秘密管理
 
-- [ ] 2.1 OAuth開始スクリプトとcallbackを実装する
+- [x] 2.1 OAuth開始スクリプトとcallbackを実装する
   - state一回利用（最大512B）、TTL、error callback（`access_denied`/`invalid_scope`）を実装する。PKCEは公式未対応のため実装しない。
   - 対応: R2
 
-- [ ] 2.2 Token Storeを実装する
+- [x] 2.2 Token Storeを実装する
   - SSM Standard SecureStringへclient/access/refresh tokenを分離保存する。
   - refresh lock、更新、revoke、削除を実装する。
   - 対応: R2, R10
 
-- [ ] 2.3 Spoon Region Resolverを実装する
+- [x] 2.3 Spoon Region Resolverを実装する
   - 公式base URL表、app/DJ region検証、host allowlist、redirect拒否を実装する。
   - 対応: R1, NFR3
 
-- [ ] 2.4 OAuth/regionの自動テストを作成する
+- [x] 2.4 OAuth/regionの自動テストを作成する
   - invalid/reused/expired state、refresh競合、revoke、region mismatch、host injectionを検証する。
   - 対応: R1, R2
 
 ## フェーズ3: 起動制御とFargate Worker
 
-- [ ] 3.1 Control Lambdaを実装する
+- [x] 3.1 Control Lambdaを実装する
   - IAM認証済みstart/stop、DynamoDB lease、RunTask/StopTaskを実装する。
   - 対応: R3
 
-- [ ] 3.2 Worker lifecycleを実装する
+- [x] 3.2 Worker lifecycleを実装する
   - 起動検証、lease heartbeat、graceful shutdown、exit code、TTL処理を実装する。
   - 対応: R3, R10, R11
 
-- [ ] 3.3 lifecycleの自動テストを作成する
+- [x] 3.3 lifecycleの自動テストを作成する
   - 二重起動、stale lease、配信なし、stop、異常終了、権限不足を検証する。
   - 対応: R3
 
 ## フェーズ4: SSEクライアント
 
-- [ ] 4.1 streaming HTTP clientを実装する
+- [x] 4.1 streaming HTTP clientを実装する
   - `GET /v1/live/events`、Bearer/Accept header、status/content-type、timeoutを実装する。
   - 対応: R4
 
-- [ ] 4.2 SSE parserを実装する
+- [x] 4.2 SSE parserを実装する
   - chunk境界、CRLF/LF、複数data、id/event/retry、comment、heartbeat、上限を実装する。
   - 対応: R4, R5
 
-- [ ] 4.3 接続ループを実装する
+- [x] 4.3 接続ループを実装する
   - `end.reason`（LIVE_ENDED / TOKEN_EXPIRED / RECONNECT / DUPLICATE_CONNECTION）と、endなし切断・45秒read timeoutによる遷移を実装する。
   - 404 `0301` の配信待ち（待機上限付き）、401 refresh-once、403のdetailCode有無による分岐、500/502のjitter backoffを実装する。
   - 対応: R3, R4
 
-- [ ] 4.4 SSE parser/reconnectの自動テストを作成する
+- [x] 4.4 SSE parser/reconnectの自動テストを作成する
   - 公式fixture、fragmentation、malformed、oversize、全status、長時間mock streamを検証する。
   - 対応: R4, R5
 
@@ -187,7 +190,8 @@
 
 ## フェーズ8: デプロイ・受入
 
-- [ ] 8.1 GitHub Actions OIDCデプロイを実装する
+- [x] 8.1 GitHub Actions OIDCデプロイを実装する
+  - `deploy-dev.yml` でfoundation → イメージのビルド・push → appの順にデプロイする。deploy roleの権限追加（bootstrapの再適用）が必要。
   - branch/environment条件付きtrustと最小権限を設定する。
   - 対応: R12
 
