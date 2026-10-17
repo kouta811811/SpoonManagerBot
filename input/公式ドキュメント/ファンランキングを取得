@@ -1,0 +1,96 @@
+ファンランキングを取得
+今部屋にいるリスナーの中で、この配信のギフトランキング上位 30 名 です。配信が終わると リセットされます。
+
+メソッド・パス	GET /v1/live/fans
+必要な権限	fans.read
+成功レスポンス	200
+配信中でないとき	404(OAPI_MNGR_0301)
+export SPOON_BASE_URL="https://jp-openapi.spooncast.net"
+export SPOON_ACCESS_TOKEN="{発行された access token}"
+
+韓国リージョンなら https://kr-openapi.spooncast.net です — リージョン別アドレス。
+
+リクエスト
+GET /v1/live/fans
+
+ヘッダー
+名前	必須	説明
+Authorization	✔	Bearer {access_token} 形式です。
+パスパラメータ・クエリパラメータ・リクエストボディは ありません。 ページングもありません — 上位 30 名が一度に届きます。
+
+リクエスト例
+curl -H "Authorization: Bearer $SPOON_ACCESS_TOKEN" "$SPOON_BASE_URL/v1/live/fans"
+
+レスポンス
+{
+  "totalCount": 2,
+  "fans": [
+    { "id": "Ab1Cd2Ef3Gh4Ij5Kl6Mn7O", "nickname": "スプーンリスナー", "rank": 1, "spoonCount": 1200 },
+    { "id": "Pq8Rs9Tu0Vw1Xy2Za3Bc4D", "nickname": "ラジオファン", "rank": 2, "spoonCount": 300 }
+  ]
+}
+
+
+フィールド	型	null	説明
+totalCount	number	いいえ	返された一覧の件数 です。最大 30 で、ファンの総数ではありません。
+fans	object[]	いいえ	累計ギフトが多い順です。
+fans[].id	string	いいえ	リスナーを指す値です。暗号化した値です。
+fans[].nickname	string	いいえ	ニックネームです。
+fans[].rank	number	いいえ	順位です。1 から 始まります。
+fans[].spoonCount	number	はい	そのリスナーがこの配信で使った累計スプーンです。値がないことがあるので null を処理します。
+id で人を識別します
+id はその人の一意な識別子です。同じ人なら常に同じ値なので、出席・累計・ランキングのキーとして 使います。nickname は変わり、重複するので識別に使わないでください。
+
+値の範囲は自分のボットとその DJ の組み合わせです。DJ が連携を解除して再度同意しても維持されます。
+
+コード
+// fans.ts — node --experimental-strip-types fans.ts
+
+interface Fan {
+  id: string;
+  nickname: string;
+  rank: number;
+  spoonCount: number | null;
+}
+
+interface Fans {
+  totalCount: number;
+  fans: Fan[];
+}
+
+const res = await fetch(`${process.env.SPOON_BASE_URL}/v1/live/fans`, {
+  headers: { Authorization: `Bearer ${process.env.SPOON_ACCESS_TOKEN}` },
+});
+if (!res.ok) throw new Error(`ファンランキングの取得に失敗しました: ${res.status}`);
+
+const { totalCount, fans } = (await res.json()) as Fans;
+console.log(`ランキングに載っているのは ${totalCount}人 (最大 30)`);
+
+for (const fan of fans.slice(0, 3)) {
+  const spoons = fan.spoonCount ?? 0;      // null が来ることがあります
+  console.log(`${fan.rank}位 ${fan.nickname} — ${spoons} スプーン`);
+}
+
+const top = fans.find((f) => f.rank === 1);
+if (top) console.log(`今日の 1 位は ${top.nickname} さん、${top.spoonCount ?? 0} スプーンです！`);
+
+node --experimental-strip-types fans.ts
+
+注意
+ボット自身はランキングに出ません。 ボットアカウントにギフト履歴があっても除き、順位は ボットを除いたうえで 1 から付け直します。抜けた順位はありません。
+
+最大 30 名までです。 ページングはありません — 31 位以降はランキングの意味がないため、 そもそも返しません。totalCount もファンの総数ではなく 返された一覧の件数(最大 30) です。 全リスナーが必要なら リスナー一覧を取得 を使います。そちらは部屋にいる人 すべてをカーソルで分けて受け取ります。
+
+今部屋にいる人だけが表示されます。 ギフトを送って退出した人はランキングから外れ、人の 出入りのたびに順位が変わります。配信全体の累計が必要なら イベントストリームのギフトイベントから自分で積み上げます。
+
+ランキングは この配信の中での累計 です。DJ の全体ファン順位ではありません。
+
+入場時点の順位は イベントストリームの fanRank でも 届きます。「1 位のファンが入場！」のような挨拶を作るなら、この API を別途呼ぶ必要はありません。
+
+エラー
+HTTP	detailCode	何が起きたか	どうするか
+401	なし	トークンがないか無効です。	DJ に再連携を案内します。
+403	なし	fans.read の権限がありません。	権限を追加して再同意を得ます。
+404	OAPI_MNGR_0301	配信中ではありません。	エラーではなく状態です。しばらくして呼び直します。
+502	OAPI_MNGR_2302	配信サーバーのエラーです。	バックオフしてから再試行します。
+この表にない状態も返ることがあります。 誤ったメソッド・Content-Type(400・405・415、 OAPI_MNGR_0103)・呼び出し上限(429、ボディなし)・サーバーエラー(500、OAPI_MNGR_1002)は すべてのエンドポイントに共通 です — エラーコード にあります。
