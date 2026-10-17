@@ -14,23 +14,39 @@ One container image is used for the worker and both Lambdas. Nothing runs contin
 
 ### 1. Apply the bootstrap (admin, once — and again whenever it changes)
 
-The deploy role needs ECR, Lambda, HTTP API, task-definition, and `iam:PassRole` permissions for the app stack. Re-run this with an administrator identity before the first app deployment:
+The deploy role needs ECR, Lambda, HTTP API, task-definition, and `iam:PassRole` permissions for the app stack. Re-run this with an administrator identity (for example in AWS CloudShell) before the first app deployment.
+
+**Updating the existing stack** — pass no parameters so the previous values are kept. Do not change `CreateOidcProvider`: if this stack created the OIDC provider, switching it to `false` deletes the provider and breaks deployments.
 
 ```bash
-aws cloudformation deploy \
-  --region ap-northeast-1 \
+git clone https://github.com/kouta811811/SpoonManagerBot.git && cd SpoonManagerBot
+
+# 1) Preview: the only change should be "Modify DeployPolicy"
+aws cloudformation deploy --region ap-northeast-1 \
+  --stack-name spoon-manager-bot-github-oidc \
+  --template-file infrastructure/github-oidc-bootstrap.yaml \
+  --capabilities CAPABILITY_NAMED_IAM --no-execute-changeset
+# run the "aws cloudformation describe-change-set ..." command it prints
+
+# 2) Apply
+aws cloudformation deploy --region ap-northeast-1 \
+  --stack-name spoon-manager-bot-github-oidc \
+  --template-file infrastructure/github-oidc-bootstrap.yaml \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+**First time only** (stack does not exist yet):
+
+```bash
+aws cloudformation deploy --region ap-northeast-1 \
   --stack-name spoon-manager-bot-github-oidc \
   --template-file infrastructure/github-oidc-bootstrap.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides \
-    GitHubOwner=kouta811811 \
-    GitHubRepo=SpoonManagerBot \
-    GitHubEnvironment=dev \
-    CreateOidcProvider=false \
-    ExistingOidcProviderArn=arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com
+  --parameter-overrides GitHubOwner=kouta811811 GitHubRepo=SpoonManagerBot \
+    GitHubEnvironment=dev CreateOidcProvider=true
 ```
 
-(Use `CreateOidcProvider=true` and omit the ARN only if the provider does not exist yet.) The role still cannot run tasks or read secret values.
+The role still cannot run tasks or read secret values.
 
 ### 2. Deploy
 
