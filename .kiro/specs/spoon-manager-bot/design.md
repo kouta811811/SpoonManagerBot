@@ -90,33 +90,33 @@ sequenceDiagram
 ### 5.1 コンポーネント
 
 ```text
-src/
-├── oauth_callback.py
-├── control.py
-├── worker.py
-├── config.py
+src/spoon_manager_bot/
+├── oauth_callback.py      （未実装）
+├── control.py             （未実装）
+├── worker.py              （未実装）
+├── config.py              （未実装）
 ├── spoon/
-│   ├── region.py
-│   ├── oauth.py
-│   ├── sse_client.py
-│   ├── sse_parser.py
-│   └── chat_client.py
+│   ├── region.py          （未実装）
+│   ├── oauth.py           （未実装）
+│   ├── sse_client.py      （未実装）
+│   ├── sse_parser.py      （未実装）
+│   └── chat_client.py     POST /v1/live/chat
 ├── domain/
-│   ├── events.py
-│   ├── commands.py
-│   ├── roles.py
-│   └── errors.py
-├── handlers/
-│   ├── chat.py
-│   ├── join.py
-│   ├── heart.py
-│   └── donation.py
+│   ├── events.py          5イベントの型付きモデル
+│   ├── commands.py        コマンド解析
+│   ├── text.py            UTF-16での文字数
+│   ├── thanks.py          お礼文（§6.3）
+│   ├── roles.py           （未実装）
+│   └── errors.py          （未実装）
+├── thanks/                お礼機能（§6.3）
+├── chat/outbox.py         送信キュー（§10）
+├── bot/router.py          イベントの振り分け
 ├── repositories/
-│   └── live_state.py
+│   └── live_state.py      （未実装）
 └── observability/
-    └── logger.py
+    └── logger.py          allowlist方式の構造化ログ
 scripts/
-└── start_oauth.py
+└── start_oauth.py         （未実装）
 ```
 
 外部仕様の詳細は [`docs/spoon-api-contract.md`](../../../docs/spoon-api-contract.md) を正とする。
@@ -191,15 +191,15 @@ STREAMING
 
 DJがチャットコマンドで登録したお礼文をDynamoDBに保存し、Workerはその文面でお礼を送る。登録がなければ送らない。
 
-#### 部品
+#### 部品（`src/spoon_manager_bot/`）
 ```text
-domain/thanks.py        お礼文のモデル、段の選択、変数展開、200文字への収め込み
-handlers/thanks_cmd.py  !setheart / !setspoon / !delheart / !delspoon / !msglist
-handlers/heart.py       like → ThanksBuffer へ追加、配信全体の累計を更新
-handlers/donation.py    donation → ThanksBuffer へ追加、配信全体の累計を更新
-thanks/buffer.py        ThanksBuffer（メモリのみ、user.id単位で合算）
-thanks/scheduler.py     15秒ごとに1通を選んで送信キューの「お礼」レーンへ渡す
-repositories/thanks_templates.py  お礼文のDynamoDB読み書き
+domain/thanks.py      お礼文のモデル（TemplateSet）、段の選択、変数展開、200文字への収め込み
+thanks/commands.py    !setheart / !setspoon / !delheart / !delspoon / !msglist（DJのみ）
+thanks/buffer.py      ThanksBuffer（メモリのみ、user.id単位で合算、優先順で次の1通を選ぶ）
+thanks/service.py     like/donation の集計と、15秒ごとの送信判断（ThanksService）
+thanks/repository.py  お礼文のDynamoDB読み書き（boto3非依存のクライアントを受け取る）
+chat/outbox.py        送信キュー（返信レーン優先、お礼レーン）
+bot/router.py         イベントの振り分け、scopeによる有効化、ログ
 ```
 
 #### お礼文の登録

@@ -1,6 +1,6 @@
 # SPOON配信マネージャーBot 実装計画
 
-> Spoon公式のSSE方式へ改訂済み。現時点ではspec更新のみで、アプリコード・AWSリソースは未実装。フェーズ0完了前に本番SSEへ接続しない。
+> Spoon公式のSSE方式へ改訂済み。AWSはdev基盤（`infrastructure/foundation.yaml`）まで。アプリはお礼機能（R13）とその土台（イベントモデル、チャット送信、送信キュー）を実装済みで、SSE接続・OAuth・Workerは未実装。フェーズ0完了前に本番SSEへ接続しない。
 
 ## フェーズ0: 公式契約の確定
 
@@ -41,7 +41,8 @@
 ## フェーズ1: プロジェクト・IaC基盤
 
 - [ ] 1.1 Python 3.12プロジェクトを作成する
-  - Lambda entrypoint、Worker、domain、Spoon adapters、repositoriesを分離する。
+  - [x] `pyproject.toml`（src レイアウト、ruff・mypy strict・pytest）、domain / thanks / chat / spoon / bot / observability の分離。
+  - [ ] 残り: Lambda entrypoint、Worker、設定の読み込み。
   - 対応: NFR5
 
 - [ ] 1.2 コンテナを作成する
@@ -55,7 +56,8 @@
   - 対応: R2, R3, R12, NFR3, NFR4
 
 - [ ] 1.4 CIを作成する
-  - lint、type、pytest、SAM validate、container/secret/dependency scanを実行する。
+  - [x] ruff、mypy、pytest のジョブを追加した。
+  - [ ] 残り: SAM validate、container/secret/dependency scan。
   - main反映だけではFargate Taskを起動しない。
   - 対応: R12, NFR5
 
@@ -113,8 +115,8 @@
 
 ## フェーズ5: イベント・コマンド・状態
 
-- [ ] 5.1 公式event modelとdispatcherを実装する
-  - `chat` / `presence` / `like` / `donation` / `end` の型付きモデル、nullable項目、未知field・未知eventの無視を実装する。
+- [x] 5.1 公式event modelとdispatcherを実装する
+  - `chat` / `presence` / `like` / `donation` / `end` の型付きモデル、nullable項目、未知field・未知eventの無視を実装した（`domain/events.py`、`bot/router.py`）。presence のウェルカムは5.4で追加する。
   - 対応: R5, R8
 
 - [ ] 5.2 MANAGER登録と無視リストを実装する
@@ -130,30 +132,32 @@
   - like/donation を ThanksBuffer へ渡す。
   - 対応: R8, R10
 
-- [ ] 5.5 お礼文の登録コマンドを実装する
+- [x] 5.5 お礼文の登録コマンドを実装する
   - `!setheart` / `!setspoon` / `!delheart` / `!delspoon` / `!msglist` をDJ（`isDj`）だけに許可する。
   - 下限の解釈、150文字・5段の上限、上書き、登録結果の返信、DynamoDB `THANKS#...` の読み書きを実装する。
   - 対応: R13, R10
 
-- [ ] 5.6 お礼の送信を実装する
+- [x] 5.6 お礼の送信を実装する
   - ThanksBuffer（メモリ、`user.id` 単位で合算、60秒の期限、特別文は最大5件）と、15秒に1通のThanksSchedulerを実装する。
   - 段の選択、優先順（特別文 → スプーン → ハート）、変数展開（`{名前}` に「さん」付与、`{数}`、`{累計}`）、200文字への収め込みと「ほかN名」、null nickname を実装する。
   - 権限（`chat.send` / `events.like` / `events.donation`）がない種別を無効にする。
   - 対応: R13, R7, R10
 
 - [ ] 5.7 event/command/お礼の自動テストを作成する
-  - 公式サンプルpayload、nullable項目、未知event、JSON風message、全command×role、集計の単位を検証する。
-  - お礼: DJ以外の無視、下限の解釈、未登録なら送らない、合算、15秒制限、優先順、200文字・「ほかN名」、期限切れ、返信レーン優先、ニックネームがログ・DBに残らないことを検証する。
+  - [x] 公式サンプルpayload、nullable項目、未知event、JSON風message、集計の単位。
+  - [x] お礼: DJ以外の無視、下限の解釈、未登録なら送らない、合算、15秒制限、優先順、200文字・「ほかN名」、期限切れ、返信レーン優先、ニックネームがログに残らないこと。
+  - [ ] 残り: 全command×role（コマンド一覧の確定後）。
   - 対応: R5, R6, R8, R13
 
 ## フェーズ6: Chat API
 
-- [ ] 6.1 `POST /v1/live/chat` clientを実装する
-  - 同一DJ token/region、schema、timeout、応答検証を実装する。
+- [x] 6.1 `POST /v1/live/chat` clientを実装する
+  - 地域ホストのallowlist、redirect拒否、`{"message"}` 送信、204成功、status → detailCode の順の分類、`x-ratelimit-*` と `Retry-After` の取得、timeoutを実装した（`spoon/chat_client.py`）。
   - 対応: R7
 
 - [ ] 6.2 送信キューとレート制御を実装する
-  - 返信レーン（優先）とお礼レーンの2レーンを実装する。お礼は失敗しても再送しない。
+  - [x] 返信レーン（優先）とお礼レーンの2レーン、お礼は失敗しても再送しない、1日上限（`Retry-After`）での送信停止（メモリ上）を実装した（`chat/outbox.py`）。
+  - [ ] 残り（以下）:
   - 5秒cooldown、`x-ratelimit-*` ヘッダーによる事前の速度調整、`OAPI_MNGR_0302` の限定再送、1日上限（`Retry-After`）による `CHAT_SUSPEND`、403 `0208` の一時停止を実装する。
   - 本文の空チェックと、非BMP文字を2文字と数える200文字判定を実装する。
   - 対応: R7
