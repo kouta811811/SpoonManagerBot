@@ -9,9 +9,8 @@
   - app/Bot/DJの地域と日本向けbase URLを確認する。
   - 対応: R1, R9
 
-- [x] 0.2 OAuth契約を記録する（一部）
-  - token/revoke endpoint、Basic認証、code 60秒、access token 1時間、RFC 6749エラーを `docs/spoon-api-contract.md` に記録した。
-  - [ ] 残り: refresh tokenの有効期限とローテーション、PKCE対応、同意拒否時のcallback。
+- [x] 0.2 OAuth契約を記録する
+  - token/revoke endpoint、Basic認証（Basic優先・UUIDのclient_id）、code 60秒・二重使用で全token失効、access token 1時間、refresh token 30日・ローテーションあり、tokenレスポンス（snake_case・scope）、PKCE未対応・state最大512B、同意拒否callback（`access_denied`/`invalid_scope`）、RFC 6749エラーを `docs/spoon-api-contract.md` に記録した。
   - 対応: R2
 
 - [x] 0.3 最小権限セットを確定する
@@ -24,9 +23,8 @@
   - headers、status、5イベントのschema、`id:` 形式、15秒heartbeat、`end.reason`、再開未提供、重複接続、入場の扱い、エラーbodyのSSE形式を `docs/spoon-api-contract.md` に記録した。
   - 対応: R4, R5, R8
 
-- [ ] 0.5 Chat API契約を記録する（一部）
-  - 200文字上限、空文字400、エラーdetailCode、呼び出し上限とヘッダー、Bot自己発言が戻らないことを記録した。
-  - [ ] 残り: request/response schemaと再送の安全性。
+- [x] 0.5 Chat API契約を記録する
+  - request `{"message": string}`（200文字・UTF-16 code unit基準）、成功204ボディなし、空文字400、エラーdetailCode、呼び出し上限とヘッダー、Bot自己発言が戻らないこと、冪等キーなし（再送は最大1回）を `docs/spoon-api-contract.md` に記録した。
   - 対応: R5, R7
 
 - [ ] 0.6 ユーザー機能仕様を承認する
@@ -63,7 +61,7 @@
 ## フェーズ2: OAuth・地域・秘密管理
 
 - [ ] 2.1 OAuth開始スクリプトとcallbackを実装する
-  - state一回利用、TTL、対応時PKCE、error callbackを実装する。
+  - state一回利用（最大512B）、TTL、error callback（`access_denied`/`invalid_scope`）を実装する。PKCEは公式未対応のため実装しない。
   - 対応: R2
 
 - [ ] 2.2 Token Storeを実装する

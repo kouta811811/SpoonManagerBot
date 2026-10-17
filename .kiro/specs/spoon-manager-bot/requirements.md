@@ -68,7 +68,7 @@ Spoon Developers公式Open APIと連携し、DJのライブ配信へ接続して
 
 ### R2. OAuth 2.0認可
 1. THE SYSTEM SHALL OAuth 2.0認可コードフローを使用し、固定共有APIトークンで代替しない。
-2. WHEN DJが連携を開始するとき、THE SYSTEM SHALL 推測困難で一回限りの `state` を発行し、公式仕様が対応する場合はPKCEを使用する。
+2. WHEN DJが連携を開始するとき、THE SYSTEM SHALL 推測困難で一回限りの `state`（最大512バイト）を発行する（PKCEは公式未対応のため使用しない）。
 3. WHEN OAuth callbackを受信するとき、THE SYSTEM SHALL `state`、有効期限、redirect URIを検証し、受信から60秒以内に認可コードを `POST /v1/oauth/token` でトークンへ交換する。
 3a. THE SYSTEM SHALL OAuth endpointへはBasic認証と `application/x-www-form-urlencoded` で送信し、エラーはRFC 6749の `error` で分岐する。
 4. THE SYSTEM SHALL 1組のアクセストークンを認可した1 DJだけに関連付ける。
@@ -225,10 +225,11 @@ Spoon Developers公式Open APIと連携し、DJのライブ配信へ接続して
 - エラー形式とdetailCode、呼び出し上限（秒あたり・1日あたり）とヘッダー
 - チャット本文の上限（200文字）、Bot自己発言がストリームに戻らないこと
 
-### P0（未確認、実装前に確認）
-1. refresh tokenの有効期限、refresh時のローテーション有無、tokenレスポンスでのscopeの表し方。
-2. PKCE対応有無、同意拒否時のcallbackパラメータ。
-3. `POST /v1/live/chat` のrequest/response schemaと再送の安全性。
+### P0（確認済み、2026-10-17 公式全文で確定）
+1. refresh token: 既定30日、更新でローテーションあり（新 `refresh_token` を必ず保存）、tokenレスポンスの `scope`（スペース区切り）で現在の同意を確認。
+2. PKCEは公式未対応。同意拒否時のcallbackは `error=access_denied`／`invalid_scope`（+`state`）。
+3. `POST /v1/live/chat`: request `{"message": string}`（200字・UTF-16 code unit）、成功は `204` ボディなし。冪等キーなしのため再送は最大1回に限定。
+4. 残: 呼び出し上限の具体数値のみ未公開 → 実レスポンスの `x-ratelimit-*` ヘッダー駆動で速度調整する。
 
 ### ユーザー仕様待ち
 1. `help`, `song`, `dice` と管理コマンドの名称、引数、応答、許可ロール。

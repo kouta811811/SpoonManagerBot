@@ -189,14 +189,14 @@ STREAMING
 
 ## 7. OAuth設計
 
-- `scripts/start_oauth.py` がstateと、対応時はPKCEを生成し、DynamoDBへ短期TTL付きで保存して認可URLを表示する。
+- `scripts/start_oauth.py` がstate（最大512バイトのランダム値）を生成し、DynamoDBへ短期TTL付きで保存して認可URLを表示する。PKCEは公式未対応のため使用しない。
 - 公開経路は `GET /oauth/callback` のみ。
 - callback Lambdaはstateを条件付きで一回利用にし、受信後60秒以内にcodeを `POST /v1/oauth/token`（`grant_type=authorization_code`）でtokenへ交換する。
 - OAuth endpointはBasic認証（Client ID/Secret）+ `application/x-www-form-urlencoded`。エラーはRFC 6749の `error` で分岐する（`invalid_grant` は再連携、`invalid_client` は設定不備）。
 - TokenはSSM Standard SecureStringへ分離保存する。access tokenは1時間で失効する。
 - token発行・更新のたびに付与scopeを保存し、Workerは有効な機能をscopeに合わせる（`chat.send` がなければ応答停止、`events.presence` がなければウェルカム無効）。
 - 要求scopeは機能設定から組み立てる。MVPは `events.chat chat.send`。機能を追加するときは追加分だけで同意画面を再表示する。
-- Fargate Workerは `end.reason=TOKEN_EXPIRED` または401で一度だけrefresh（`grant_type=refresh_token`）する。同時refreshはDynamoDB lockで直列化する。refresh tokenがローテーションされる場合に備え、レスポンスに含まれていれば常に上書き保存する。
+- Fargate Workerは `end.reason=TOKEN_EXPIRED` または401で一度だけrefresh（`grant_type=refresh_token`）する。同時refreshはDynamoDB lockで直列化する。refresh tokenは**ローテーションされる**（既定寿命30日）。更新のたびにレスポンスの新しい `refresh_token` を必ず上書き保存する（保存漏れは次回更新で `400 invalid_grant` を招く）。access tokenは既定1時間（`expires_in=3600`）、期限5分前を目安に先行更新する。
 - revoke/解除時はTaskを先に停止し、`POST /v1/oauth/revoke` 後にSSM token、state、MANAGER登録を削除する。
 
 ## 8. 地域解決・通信保護
@@ -224,7 +224,7 @@ class SpoonRegionConfig:
 | PK | SK | 用途 | TTL |
 |---|---|---|---|
 | `DJ#SINGLE` | `LEASE` | Task ID、lease期限、heartbeat | 短期 |
-| `OAUTH#SINGLE` | `STATE#{hash}` | state、PKCE verifier、used | 数分 |
+| `OAUTH#SINGLE` | `STATE#{hash}` | state（最大512B）、used | 数分 |
 | `DJ#SINGLE` | `MANAGER#{user_id_hash}` | HOSTが登録したMANAGERの `user.id` | なし（解除・連携解除で削除） |
 | `DJ#SINGLE` | `CHAT_SUSPEND` | 1日上限の429で止めたチャット送信の再開時刻 | 再開時刻 |
 | `SESSION#{session}` | `META` | status、Task ID、開始/終了、終了reason | 終了後24h |
@@ -248,7 +248,7 @@ class SpoonRegionConfig:
 - 403 `OAPI_MNGR_0208` は30秒後に1回再試行し、続く場合はその配信中の送信を止めて記録する。
 - 400 `0103` / `0108` / `0109` は再送しない（実装または入力の不備として記録）。
 - chat送信はbest-effort。重要状態を先に保存し、エラーの `message` をチャットへ出さない。
-- 再送の安全性（同じ内容が二重投稿されないか）は未確認のため、5xx/timeout時の再送は最大1回に限る。
+- chat成功は `204` ボディなし。公式に冪等キーの定めがなく二重投稿を防ぐ仕組みはないため、5xx/timeout時の再送は最大1回に限り、クールダウンと併用する。送信前に `isChatFrozen`・200文字（UTF-16 code unit基準）を検証する。
 
 ## 11. エラー設計
 
@@ -333,7 +333,7 @@ class SpoonRegionConfig:
 - region allowlistとredirect拒否、ログ禁止値の非出力。
 
 ### 統合
-- OAuth state一回利用、60秒以内のcode交換、token保存/refresh（ローテーション有無の両方）/revoke。
+- OAuth state一回利用、60秒以内のcode交換、token保存/refresh（ローテーションあり＝新refresh_token上書き保存）/revoke。
 - ECS RunTask排他lease、heartbeat期限、StopTask。
 - DynamoDB MANAGER登録・削除、CHAT_SUSPEND、TTL。
 - mock SSE serverでの長時間接続、1時間ごとのTOKEN_EXPIRED、RECONNECT、DUPLICATE_CONNECTION、read timeout。

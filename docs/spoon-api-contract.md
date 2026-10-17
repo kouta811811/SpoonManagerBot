@@ -2,8 +2,9 @@
 
 Spoon Developers公式ドキュメント（2026-10-17時点）から、実装に必要な外部仕様を要約したもの。要件・設計はこの文書を正とし、公式ドキュメントが更新されたらここを先に直す。
 
-- 出典の確度: **確認済み** = 公式ページ全文（PDF）で確認 / **抜粋** = 公式ページの検索抜粋のみで確認 / **未確認** = 公式情報なし
+- 出典の確度: **確認済み** = 公式ページ全文（`input/公式ドキュメント/` のテキスト）で確認 / **抜粋** = 公式ページの検索抜粋のみで確認 / **未確認** = 公式情報なし
 - 公式内容はライセンス遵守のため引用せず、要約・再構成している。
+- 2026-10-17更新: `input/公式ドキュメント/` に全ページの公式テキストが追加されたため、トークン・チャット送信・イベントストリーム・エラーコードを全文で再確認し、旧「未確認」を解消した。
 
 ## 1. 接続先（抜粋）
 
@@ -19,26 +20,42 @@ Spoon Developers公式ドキュメント（2026-10-17時点）から、実装に
 
 | 項目 | 内容 | 確度 |
 |---|---|---|
-| 同意画面パラメータ | `response_type=code`, `client_id`, `redirect_uri`, `scope`（空白区切り） | 抜粋 |
-| redirect_uri | 登録値と1文字でも違うとエラー | 抜粋 |
-| 認可コード | 60秒以内にtokenへ交換 | 確認済み |
+| 同意画面パラメータ | `response_type=code`（code のみ）, `client_id`（UUID形式必須）, `redirect_uri`, `scope`（空白区切り・`%20`エンコード）, `state`（推奨・最大512バイト） | 確認済み |
+| redirect_uri | 登録値と1文字でも違うとエラー。不一致時は自分のURLへ戻らずSpoon側にエラー表示 | 確認済み |
+| 認可コード（code） | 60秒以内にtokenへ交換。1回限り。**同一codeを2回使うとその連携の全トークンが失効**（盗用シグナル扱い）。ネットワークエラーで応答を受け取れなくても同一codeで再試行せず、同意からやり直す | 確認済み |
 | token endpoint | `POST /v1/oauth/token`（`grant_type` は `authorization_code` / `refresh_token`） | 確認済み |
-| revoke endpoint | `POST /v1/oauth/revoke` | 確認済み |
-| OAuth endpointの認証 | Basic認証 + `application/x-www-form-urlencoded` | 抜粋 |
-| Bot APIの認証 | `Authorization: Bearer {access_token}`、bodyは `application/json` | 抜粋 |
-| access token有効期限 | 発行から1時間 | 確認済み |
-| refresh token有効期限・ローテーション | — | **未確認** |
-| PKCE・state | — | **未確認**（stateは常に付与。PKCEは対応確認後に有効化） |
+| revoke endpoint | `POST /v1/oauth/revoke`（`token` 必須、`token_type_hint` は受理するが無視）。成功は200ボディなし。存在しない/他人のtokenでも200（RFC 7009）。refresh失効でaccessも道連れ。失効は「連携解除」ではなく同意は残る | 確認済み |
+| OAuth endpointの認証 | `Content-Type: application/x-www-form-urlencoded`。クライアント認証は **`Authorization: Basic base64(client_id:client_secret)` が優先**、無ければform の `client_id`/`client_secret` にフォールバック。どちらも無い/`client_id` 非UUIDは `401 invalid_client`（`WWW-Authenticate: Basic realm="oauth"` 付き）。Client Secretを使うのでサーバーからのみ呼ぶ | 確認済み |
+| Bot APIの認証 | `Authorization: Bearer {access_token}`、bodyは `application/json` | 確認済み |
+| access token有効期限 | 発行から1時間（`expires_in` 既定3600秒） | 確認済み |
+| refresh token有効期限 | 既定 **30日** | 確認済み |
+| refresh token ローテーション | **あり**。更新で古いrefresh tokenは直ちに失効し、新しいaccess/refreshペアが返る。**新しい `refresh_token` を必ず保存**（保存漏れだと次回更新が `400 invalid_grant` でBot停止）。古いaccess tokenは道連れにせず自然失効（更新直後は2本のaccess tokenが一時的に両方有効） | 確認済み |
+| PKCE | 公式ドキュメントに **記載なし＝未対応**。`code_challenge`/`code_verifier` は送らない | 確認済み（記載なし） |
+| state | リクエストごとに新しいランダム値。最大512バイト。callbackにそのまま載るので照合して偽造を弾く | 確認済み |
+| 更新時のscope確認 | レスポンスの `scope` はその時点のDJ同意に基づく。DJが同意を減らすと次回更新で自動反映。毎回確認する | 確認済み |
+| 更新タイミング | 期限直前は危険。**5分前など大きめマージン**で更新し、結果を永続化（メモリのみだと再起動で再同意が必要）。ただし既に開いているSSEは接続時tokenの失効時刻に終わる（`TOKEN_EXPIRED`）。事前更新はchat等REST呼び出しのため引き続き必要 | 確認済み |
 | トークンとDJ | 1 token = 1 DJの同意。path/queryでDJを指定しない | 確認済み |
 
-OAuth endpointのエラーはRFC 6749形式（`error` / `error_description`）。
+### tokenレスポンス（発行・更新 共通、snake_case固定）
+
+```json
+{
+  "access_token": "at_...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "rt_...",
+  "scope": "events.chat chat.send"
+}
+```
+
+OAuth endpointのエラーはRFC 6749 §5.2形式（`error` / `error_description`）。`error_description` は文言が変わるので分岐は `error` で行う。`invalid_scope` はtokenではなく同意ステップで返る。
 
 | error | HTTP | Botの対応 |
 |---|---:|---|
-| `invalid_request` | 400 | リクエスト不備。修正するまで再送しない |
-| `invalid_client` | 401 | Client ID/Secret不一致。設定を確認 |
-| `invalid_grant` | 400 | codeの期限切れ・使用済み、またはrefresh_token失効。refresh失敗ならDJに再連携を案内 |
-| `unsupported_grant_type` | 400 | 実装バグ |
+| `invalid_request` | 400 | 必須formフィールド不足。修正するまで再送しない |
+| `invalid_client` | 401 | クライアント認証失敗 / `client_id` 形式不正 / アプリ停止中。資格情報とアプリ状態を確認 |
+| `invalid_grant` | 400 | codeの期限切れ・使用済み・別アプリ発行、redirect_uri不一致、refresh_token無効・失効。codeは同意からやり直し、refresh無効ならDJに再連携を案内 |
+| `unsupported_grant_type` | 400 | `authorization_code`/`refresh_token` 以外。実装バグ |
 
 ## 3. 権限（scope）（確認済み）
 
@@ -178,11 +195,13 @@ data:{...json...}
 
 | HTTP | detailCode | 意味 | 対応 |
 |---|---|---|---|
-| 401 | なし | token無効 | refreshを1回、それでも401ならDJに再連携を案内 |
-| 403 | なし | `events.*` 権限がない | 再同意を案内 |
+| 401 | なし | token無効（失効・破棄・連携解除・アプリ停止すべて含む） | DJに再連携を案内。401を無限リトライしない |
+| 403 | なし | `events.*` 権限がひとつもない | 権限を追加して再同意。連携は生きている |
 | 403 | `OAPI_MNGR_0209` | 入場できない（DJがBotをブロックした可能性） | 停止しDJに案内 |
-| 404 | `OAPI_MNGR_0301` | 配信中でない | バックオフして再接続 |
+| 404 | `OAPI_MNGR_0301` | 配信中でない（状態） | バックオフして再接続 |
 | 502 | `OAPI_MNGR_2302` | 配信サーバーエラー | バックオフして再試行 |
+
+> 401と403は別扱い（401=再連携が必要、権限不足の403=再同意だけで済む）。まとめて処理すると正常な連携まで切ってしまう。この表にない共通エラー（400/405/415 `OAPI_MNGR_0103`、呼び出し上限429ボディなし、500 `OAPI_MNGR_1002`）は全エンドポイント共通（§7）。
 
 ## 5. マネージャー指定（確認済み）
 
@@ -193,14 +212,21 @@ data:{...json...}
 - 配信ごとの指定は最大3名。部屋にいる人だけ指定できる。指定・解除は数秒で反映され、再接続は不要。
 - マネージャーになると、マネージャー等級のメッセージも届く。DMはどの場合も届かない。
 
-## 6. チャット送信 `POST /v1/live/chat`
+## 6. チャット送信 `POST /v1/live/chat`（確認済み）
 
-| 項目 | 内容 | 確度 |
-|---|---|---|
-| 表示 | Botアカウントのニックネームで投稿 | 抜粋 |
-| 本文 | 最大200文字。絵文字は2文字と数えられることがある。空・空白のみは400 | 確認済み |
-| requestの項目名・response | — | **未確認** |
-| 冪等性・再送安全性 | — | **未確認** |
+| 項目 | 内容 |
+|---|---|
+| 認証 | `Authorization: Bearer {access_token}`、`Content-Type: application/json` |
+| リクエストボディ | `{"message": string}` のみ。配信はtokenが決めるのでpath/bodyに配信指定なし |
+| `message` | 必須・非null。最大200文字。**文字数はUTF-16 code unit基準**（絵文字1つが2文字で数えられることがある）。空・空白のみは `400`（`OAPI_MNGR_0108`）、200超は `400`（`OAPI_MNGR_0109`） |
+| 成功レスポンス | **`204` ボディなし**。パース対象がないのでステータスコードだけ見る |
+| 配信中でないとき | `404`（`OAPI_MNGR_0301`） |
+| 接続不要 | SSEに接続していなくても送れる。部屋にいなければサーバーが先に入場させる |
+| 自己echo | 送信メッセージは自分のSSEストリームに戻らない（コマンド再実行事故の防止）。同じ配信の他Botの発言は見える |
+| 冪等性・再送安全性 | 公式に冪等キーやidempotency機構の記載なし。成功は204でレスポンスbodyもない。**送信前に `isChatFrozen`・文字数を検証**して失敗を減らし、タイムアウト等での安易な再送は二重投稿になり得る点に注意（再送は429/5xx/タイムアウト時に限定し、クールダウンと組み合わせる） |
+
+- 送信前に [現在の配信を取得 `GET /v1/live`] の `isChatFrozen` を見ると、凍結中の失敗を先に避けられる。
+- `429 OAPI_MNGR_0302` はBotが送りすぎた時だけでなく、配信全体のチャット混雑でも発生（上限を配信全体で分け合うため、Botが速度を落としてもすぐには解消しない）。
 
 ## 7. 共通エラー（確認済み）
 
@@ -250,20 +276,41 @@ Bot API（OAuth endpoint以外）はRFC 7807形式:
 - 連携（DJ）を増やしても1日の総量は増えない。
 - リスナー向け告知はBotの上限に数えない。
 
-## 9. 未確認事項
-1. refresh tokenの有効期限、refresh時にrefresh tokenも新しくなるか（ローテーション）、tokenレスポンスでのscopeの表し方
-2. PKCE対応有無、`state` の扱い、同意拒否時のエラーパラメータ
-3. `POST /v1/live/chat` のrequest/response schema、再送の安全性
-4. 秒あたり・1日あたりの具体的な上限値（実レスポンスのヘッダーで確認する）
+## 9. 同意コールバック（`redirect_uri` に戻る値）（確認済み）
+
+- 成功: `?code=...&state=...`。`code` は60秒以内に交換、`state` は送った値と一致しなければ破棄。
+- 失敗: `?error=...&state=...`。
+
+| error | 意味 | 対応 |
+|---|---|---|
+| `access_denied` | DJが許可しなかった | 連携を止めてDJに案内。再試行は可 |
+| `invalid_scope` | アプリが持っていない権限を要求した | scopeをアプリ登録済み権限に絞る。再送しても同じ |
+
+- `client_id`/`redirect_uri` が信頼できないときは **自分のURLに戻さずSpoon側にエラー表示**（`error` も来ない）。送信前にClient IDとredirect URLを確認する。
+
+## 10. 残る未確認事項
+1. 秒あたり・1日あたりの具体的な上限値 — 公式も非公開で、実レスポンスの `x-ratelimit-*` ヘッダーで確認する方針（§8）。実装は数値を決め打ちせずヘッダー駆動で速度調整する。
+
+> 旧「未確認」のうち、refresh token寿命（30日）・ローテーション（あり）・scope表現（レスポンス `scope`）・PKCE（未対応）・state（最大512バイト）・同意拒否エラー・chatのrequest(`{"message"}`)/response(`204`)は、2026-10-17に `input/公式ドキュメント/` 全文で確定した（§2・§6・§9）。
 
 ## 参照
-- [Event stream](https://developers.spooncast.net/docs/ja/api-reference/live-events)（確認済み）
-- [Error codes](https://developers.spooncast.net/docs/ja/api-reference/error-codes)（確認済み）
-- [Build a bot](https://developers.spooncast.net/docs/en/getting-started/build-a-bot)
-- [権限を選ぶ（日本語）](https://developers.spooncast.net/docs/ja/getting-started/choosing-permissions)（確認済み）
-- [Get a DJ's consent](https://developers.spooncast.net/docs/en/getting-started/user-authorization)
-- [Tokens](https://developers.spooncast.net/docs/en/api-reference/tokens)
-- [Chat](https://developers.spooncast.net/docs/en/api-reference/chat)
-- [Listener notice](https://developers.spooncast.net/docs/en/getting-started/listener-notice)
+
+一次情報は `input/公式ドキュメント/` の公式テキスト全文（2026-10-17時点）。対応する公式URLを併記する。
+
+| ローカル全文 | 公式URL | 確度 |
+|---|---|---|
+| `input/公式ドキュメント/トークン` | [Tokens](https://developers.spooncast.net/docs/ja/api-reference/tokens) | 確認済み |
+| `input/公式ドキュメント/イベントストリーム` | [Event stream](https://developers.spooncast.net/docs/ja/api-reference/live-events) | 確認済み |
+| `input/公式ドキュメント/チャットを送る` | [Chat](https://developers.spooncast.net/docs/ja/api-reference/chat) | 確認済み |
+| `input/公式ドキュメント/エラーコード` | [Error codes](https://developers.spooncast.net/docs/ja/api-reference/error-codes) | 確認済み |
+| `input/公式ドキュメント/権限を選ぶ` | [Choosing permissions](https://developers.spooncast.net/docs/ja/getting-started/choosing-permissions) | 確認済み |
+| `input/公式ドキュメント/DJ の同意を得る` | [Get a DJ's consent](https://developers.spooncast.net/docs/ja/getting-started/user-authorization) | 確認済み |
+| `input/公式ドキュメント/DJ をフォロー` | [Follow a DJ](https://developers.spooncast.net/docs/ja/api-reference/follow) | 確認済み |
+| `input/公式ドキュメント/エンドポイント` | [Endpoints](https://developers.spooncast.net/docs/ja/api-reference/endpoints) | 確認済み |
+| `input/公式ドキュメント/現在の配信を取得` | [Read the current broadcast](https://developers.spooncast.net/docs/ja/api-reference/live) | 確認済み |
+| `input/公式ドキュメント/リスナー一覧を取得` | [Listeners](https://developers.spooncast.net/docs/ja/api-reference/listeners) | 確認済み |
+| `input/公式ドキュメント/ファンランキングを取得` | [Fans](https://developers.spooncast.net/docs/ja/api-reference/fans) | 確認済み |
+| `input/公式ドキュメント/アプリ登録` | [App registration](https://developers.spooncast.net/docs/ja/getting-started/app-registration) | 確認済み |
+| `input/公式ドキュメント/ボットを作る` | [Build a bot](https://developers.spooncast.net/docs/ja/getting-started/build-a-bot) | 確認済み |
 
 Content was rephrased for compliance with licensing restrictions.
