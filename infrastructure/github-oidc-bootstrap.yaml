@@ -80,6 +80,14 @@ Resources:
 
   DeployPolicy:
     Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            # cfn-lint's action list lacks apigateway:TagResource/UntagResource,
+            # but API Gateway v2 authorizes tag-on-create with them (CallbackStage
+            # failed with AccessDenied without TagResource).
+            - W3037
     Properties:
       ManagedPolicyName: !Sub '${ProjectName}-github-deploy'
       Roles:
@@ -258,6 +266,8 @@ Resources:
               - apigateway:PUT
               - apigateway:PATCH
               - apigateway:DELETE
+              - apigateway:TagResource
+              - apigateway:UntagResource
             Resource:
               - !Sub 'arn:${AWS::Partition}:apigateway:*::/apis'
               - !Sub 'arn:${AWS::Partition}:apigateway:*::/apis/*'
