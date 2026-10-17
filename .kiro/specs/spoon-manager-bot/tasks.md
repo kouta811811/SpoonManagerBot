@@ -9,29 +9,27 @@
   - app/Bot/DJの地域と日本向けbase URLを確認する。
   - 対応: R1, R9
 
-- [ ] 0.2 OAuth契約を記録する
-  - authorization/token/refresh/revoke URL、redirect規則、PKCE、TTL、エラーを記録する。
-  - 1 token = 1 DJをfixtureと契約テストへ反映する。
+- [x] 0.2 OAuth契約を記録する
+  - token/revoke endpoint、Basic認証（Basic優先・UUIDのclient_id）、code 60秒・二重使用で全token失効、access token 1時間、refresh token 30日・ローテーションあり、tokenレスポンス（snake_case・scope）、PKCE未対応・state最大512B、同意拒否callback（`access_denied`/`invalid_scope`）、RFC 6749エラーを `docs/spoon-api-contract.md` に記録した。
   - 対応: R2
 
-- [ ] 0.3 最小権限セットを確定する
-  - 11権限からchat/join/heart/donation受信とchat送信に必要なものだけを選ぶ。
-  - Developer App登録値とDJ同意要求を一致させる。
+- [x] 0.3 最小権限セットを確定する
+  - 権限一覧9種類を `docs/spoon-api-contract.md` に記録した。
+  - MVPは `events.chat chat.send`。入場ウェルカムは `events.presence dj.follow`、ハート・ギフトは `events.like` / `events.donation` を追加同意する。
+  - [ ] 残り: Developer Appへの登録値とDJ同意要求を一致させる（0.1と合わせて実施）。
   - 対応: R1, R4, R7
 
-- [ ] 0.4 SSE契約を記録する
-  - `GET /v1/live/events` のheaders、status、event名、5 payload、event ID、heartbeat、接続上限を記録する。
-  - reconnect、retry、resume、順序、重複、同時接続、live endの規則を確認する。
-  - error bodyのSSE形式もfixture化する。
+- [x] 0.4 SSE契約を記録する
+  - headers、status、5イベントのschema、`id:` 形式、15秒heartbeat、`end.reason`、再開未提供、重複接続、入場の扱い、エラーbodyのSSE形式を `docs/spoon-api-contract.md` に記録した。
   - 対応: R4, R5, R8
 
-- [ ] 0.5 Chat API契約を記録する
-  - `POST /v1/live/chat` のschema、文字制限、rate limit、Retry-After、再試行安全性を確認する。
-  - Bot投稿のSSE echoと自己識別方法を確認する。
+- [x] 0.5 Chat API契約を記録する
+  - request `{"message": string}`（200文字・UTF-16 code unit基準）、成功204ボディなし、空文字400、エラーdetailCode、呼び出し上限とヘッダー、Bot自己発言が戻らないこと、冪等キーなし（再送は最大1回）を `docs/spoon-api-contract.md` に記録した。
   - 対応: R5, R7
 
 - [ ] 0.6 ユーザー機能仕様を承認する
-  - command catalog、ロール、MANAGER設定、welcome/heart/donation応答を確定する。
+  - command catalog、MANAGER登録コマンドの書式、welcome/heart/donation応答を確定する。
+  - ADR-010〜012（MANAGER方式、ウェルカム任意化、配信待ち10分）を承認する。
   - 対応: R6, R8
 
 - [ ] 0.7 コスト見積りと運用手順を承認する
@@ -63,7 +61,7 @@
 ## フェーズ2: OAuth・地域・秘密管理
 
 - [ ] 2.1 OAuth開始スクリプトとcallbackを実装する
-  - state一回利用、TTL、対応時PKCE、error callbackを実装する。
+  - state一回利用（最大512B）、TTL、error callback（`access_denied`/`invalid_scope`）を実装する。PKCEは公式未対応のため実装しない。
   - 対応: R2
 
 - [ ] 2.2 Token Storeを実装する
@@ -103,9 +101,10 @@
   - chunk境界、CRLF/LF、複数data、id/event/retry、comment、heartbeat、上限を実装する。
   - 対応: R4, R5
 
-- [ ] 4.3 再接続状態機械を実装する
-  - 401 refresh-once、403 stop、429 Retry-After、5xx/切断full-jitter、resumeを実装する。
-  - 対応: R4
+- [ ] 4.3 接続ループを実装する
+  - `end.reason`（LIVE_ENDED / TOKEN_EXPIRED / RECONNECT / DUPLICATE_CONNECTION）と、endなし切断・45秒read timeoutによる遷移を実装する。
+  - 404 `0301` の配信待ち（待機上限付き）、401 refresh-once、403のdetailCode有無による分岐、500/502のjitter backoffを実装する。
+  - 対応: R3, R4
 
 - [ ] 4.4 SSE parser/reconnectの自動テストを作成する
   - 公式fixture、fragmentation、malformed、oversize、全status、長時間mock streamを検証する。
@@ -114,27 +113,23 @@
 ## フェーズ5: イベント・コマンド・状態
 
 - [ ] 5.1 公式event modelとdispatcherを実装する
-  - chat/join/heart/donationと5番目のevent、未知eventを実装する。
+  - `chat` / `presence` / `like` / `donation` / `end` の型付きモデル、nullable項目、未知field・未知eventの無視を実装する。
   - 対応: R5, R8
 
-- [ ] 5.2 重複抑止/checkpointを実装する
-  - 公式event ID/resume保証に従ってDynamoDB条件付き処理を行う。
-  - 対応: R4, R5, R10
+- [ ] 5.2 MANAGER登録と無視リストを実装する
+  - HOSTの管理コマンドによるMANAGERの登録・解除（DynamoDB）と、他Bot等の無視ユーザーID設定を実装する。
+  - 対応: R5, R6, R10
 
-- [ ] 5.3 自己投稿除外を実装する
-  - Bot chatとlistener noticeがstreamへ戻ってもcommand loopを起こさない。
-  - 対応: R5, R9
-
-- [ ] 5.4 command registry/RBACを実装する
-  - `!`/`/`、引数検証、HOST/MANAGER/LISTENER許可集合を実装する。
+- [ ] 5.3 command registry/RBACを実装する
+  - `!`/`/`、引数検証、`isDj` によるHOST判定、MANAGER登録、LISTENERの許可集合を実装する。
   - 対応: R6
 
-- [ ] 5.5 join/heart/donation handlerを実装する
-  - 承認済み頻度、文面、非個人別集計を実装する。
+- [ ] 5.4 presence/like/donation handlerを実装する
+  - 任意のウェルカム（同一配信で一度）、`totalAmount` によるハート集計と `PAID` への応答、`amount` によるギフト集計とお礼を実装する。
   - 対応: R8, R10
 
-- [ ] 5.6 event/commandの自動テストを作成する
-  - 公式event fixture、未知event、重複、自己投稿、全command×roleを検証する。
+- [ ] 5.5 event/commandの自動テストを作成する
+  - 公式サンプルpayload、nullable項目、未知event、JSON風message、全command×role、集計の単位を検証する。
   - 対応: R5, R6, R8
 
 ## フェーズ6: Chat API
@@ -143,14 +138,14 @@
   - 同一DJ token/region、schema、timeout、応答検証を実装する。
   - 対応: R7
 
-- [ ] 6.2 cooldown/rate limitを実装する
-  - DynamoDBの原子的5秒cooldownと公式limitを適用する。
-  - 429/Retry-Afterと安全な場合だけの限定再試行を実装する。
+- [ ] 6.2 送信キューとレート制御を実装する
+  - 5秒cooldown、`x-ratelimit-*` ヘッダーによる事前の速度調整、`OAPI_MNGR_0302` の限定再送、1日上限（`Retry-After`）による `CHAT_SUSPEND`、403 `0208` の一時停止を実装する。
+  - 本文の空チェックと、非BMP文字を2文字と数える200文字判定を実装する。
   - 対応: R7
 
 - [ ] 6.3 Chat APIの自動テストを作成する
-  - 200/400/401/403/429/5xx/timeout、自己echo、ログ漏洩なしを検証する。
-  - 対応: R5, R7, R11
+  - 200/400（0103/0108/0109）/401/403（なし/0208）/429（0302/秒/日）/500/502/timeout、ログ漏洩なしを検証する。
+  - 対応: R7, R11
 
 ## フェーズ7: 可観測性・データ保護
 
@@ -179,7 +174,8 @@
 
 - [ ] 8.2 dev統合試験を実施する
   - OAuth→RunTask→SSE→event→chat→停止を検証する。
-  - 長時間接続、切断、resume、Task再起動、region mismatchを検証する。
+  - 長時間接続、1時間ごとのTOKEN_EXPIRED再接続、切断、Task再起動、region mismatchを検証する。
+  - Botのマネージャー指定有無でpresenceが届くかを確認する。
   - 対応: R1〜R12
 
 - [ ] 8.3 性能・コスト試験を実施する
@@ -201,19 +197,20 @@
 | R1 登録・地域 | 0.1, 0.3, 2.3, 2.4 |
 | R2 OAuth | 0.2, 2.1, 2.2, 2.4, 7.3 |
 | R3 起動・停止 | 0.7, 1.3, 3.1〜3.3 |
-| R4 SSE | 0.4, 4.1〜4.4, 5.2 |
-| R5 検証・重複 | 0.4, 0.5, 4.2, 5.1〜5.3, 5.6 |
-| R6 Command/RBAC | 0.6, 5.4, 5.6 |
+| R4 SSE | 0.4, 4.1〜4.4 |
+| R5 イベント検証 | 0.4, 0.5, 4.2, 5.1, 5.2, 5.5 |
+| R6 Command/RBAC | 0.6, 5.3, 5.5 |
 | R7 Chat | 0.3, 0.5, 6.1〜6.3 |
-| R8 Event処理 | 0.4, 0.6, 5.1, 5.5, 5.6 |
-| R9 Listener notice | 0.1, 5.3, 7.4 |
-| R10 Data | 3.2, 5.2, 5.5, 7.1, 7.3 |
+| R8 Event処理 | 0.4, 0.6, 5.1, 5.4, 5.5 |
+| R9 Listener notice | 0.1, 7.4 |
+| R10 Data | 3.2, 5.2, 5.4, 7.1, 7.3 |
 | R11 Observability | 0.7, 3.2, 6.3, 7.1〜7.3 |
 | R12 Deploy/approval | 0.7, 1.3, 1.4, 8.1, 8.4, 8.5 |
 
 ## 実装開始ゲート
 - [ ] フェーズ0の公式契約・ユーザー仕様・コスト見積りが完了している。
-- [ ] 公式5 eventと必要permissionの正確な名称が確定している。
-- [ ] SSE reconnect/resumeとChat API rate limitが確定している。
+- [x] 公式5 eventとMVPに必要なpermission名（`events.chat` / `chat.send`）が確定している。
+- [x] SSEの再接続方針とChat API・呼び出し上限の規則が確定している。
+- [ ] refresh tokenの扱いとChat API request schemaが確定している（スケルトン実装は先行可）。
 - [ ] Bot AccountとDeveloper Appが準備されている。
 - [ ] ユーザーが改訂requirements/design/tasksを承認している。
