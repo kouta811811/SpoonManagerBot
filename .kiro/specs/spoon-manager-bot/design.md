@@ -169,8 +169,8 @@ STREAMING
 |---|---|---|
 | `chat` | ChatEvent | コマンド解析、RBAC（`isDj` でHOST判定） |
 | `presence` | PresenceEvent | 任意のウェルカム（同一配信で `user.id` 単位に一度） |
-| `like` | LikeEvent | `totalAmount` で集計、`PAID` に応答 |
-| `donation` | DonationEvent | `amount`（合計スプーン）で集計、お礼 |
+| `like` | LikeEvent | `totalAmount` で集計、`PAID`/`FREE` ともお礼の対象（§6.3） |
+| `donation` | DonationEvent | `amount`（合計スプーン）で集計、お礼の対象（§6.3） |
 | `end` | StreamEndEvent | 接続ループへ `reason` を返す |
 
 - Bot自身の発言はストリームに戻らないため、自己発言の除外処理は持たない。同じ配信の他Botとの応答ループを防ぐため、無視するユーザーIDを設定できる。
@@ -187,6 +187,78 @@ STREAMING
 - 運用手順: 追加同意 → 配信中にWorkerが一度だけ `POST /v1/live/follow` を呼ぶ（またはBotアカウントでアプリから直接フォロー）→ 配信後にDJがBotを固定マネージャーに指定 → 次回配信から有効。
 - Botがマネージャーでなくてもエラーにはならず、`presence` が届かないだけなので、届かない状態を監視ログで検知できるようにする。
 
+### 6.3 ハート・スプーンのお礼（要件R13）
+
+DJがチャットコマンドで登録したお礼文をDynamoDBに保存し、Workerはその文面でお礼を送る。登録がなければ送らない。
+
+#### 部品
+```text
+domain/thanks.py        お礼文のモデル、段の選択、変数展開、200文字への収め込み
+handlers/thanks_cmd.py  !setheart / !setspoon / !delheart / !delspoon / !msglist
+handlers/heart.py       like → ThanksBuffer へ追加、配信全体の累計を更新
+handlers/donation.py    donation → ThanksBuffer へ追加、配信全体の累計を更新
+thanks/buffer.py        ThanksBuffer（メモリのみ、user.id単位で合算）
+thanks/scheduler.py     15秒ごとに1通を選んで送信キューの「お礼」レーンへ渡す
+repositories/thanks_templates.py  お礼文のDynamoDB読み書き
+```
+
+#### お礼文の登録
+```text
+!setspoon 1000 🎉{名前}、{数}スプーン本当にありがとう！
+  └ コマンド  └ 下限（省略時1） └ 文面（150文字以内）
+```
+- `chat.isDj=true` のときだけ実行する。それ以外は無視し、返信もしない。
+- コマンド名のあとの最初の語が半角整数だけなら下限とみなす。`!setspoon 100円ありがとう` のように数字の後ろに文字が続く場合は文面の一部として扱う。
+- 1種別あたり最大5段。同じ下限は上書き。
+- 保存後に「スプーンのお礼を登録しました（1000〜）」と返信する。`!msglist` は「ハート: 1, 100 ／ スプーン: 1, 1000」のように下限だけを返す（文面は長くなるため返さない）。
+- Workerは起動時にお礼文を読み込み、登録・削除のたびにメモリ上の内容も更新する。
+
+#### 段の選択
+- 送り主ごとの量（ハート `totalAmount` の合計、スプーン `amount` の合計）以下の下限のうち、最大の段を使う。
+- その種別で最も小さい下限の段を「通常文」、それより上の段を「特別文」と呼ぶ。
+- どの下限にも届かない人はお礼の対象外（例: 下限100だけ登録され、ハート3個の人）。
+
+#### 送信の流れ
+```mermaid
+sequenceDiagram
+    participant H as heart/donation handler
+    participant B as ThanksBuffer（メモリ）
+    participant S as ThanksScheduler（15秒）
+    participant Q as 送信キュー（お礼レーン）
+    participant C as Chat API
+
+    H->>B: add(kind, user.id, nickname, amount)
+    Note over B: 同じuser.idは量を合算
+    loop 15秒ごと
+        S->>B: 期限切れ（60秒超）を破棄
+        S->>B: 次の1通を選ぶ（特別文 → スプーン通常 → ハート通常）
+        S->>Q: 本文を渡す（送った人をBufferから外す）
+        Q->>C: POST /v1/live/chat
+    end
+```
+
+- **15秒の枠**: 最後にお礼を送った時刻から15秒たったら次の1通を選ぶ。送るものがなければ何もしない（次にイベントが届いた時点で15秒たっていればすぐ送る）。
+- **優先順**: ① 特別文の人（1人ずつ、量が多い人から） ② スプーン通常文の人たち（まとめる） ③ ハート通常文の人たち（まとめる）。送らなかった分は次の枠まで残す。
+- **まとめ方**: 量の多い順に `Aさん、Bさん、…` と並べ、展開後の本文が200文字（UTF-16 code unit）に収まる人数までにして「、ほかN名」を付ける。1人目だけでも収まらなければ名前を切り詰める（末尾「…」）。
+- **期限**: ためてから60秒を超えた人は捨てる。特別文の待ち行列は最大5件。
+- **失敗時**: お礼の送信が429・`CHAT_SUSPEND`・403 `0208` で失敗しても再送しない。15秒の枠は消費したものとして扱う。
+
+#### 変数展開
+| 変数 | 1人 | 複数人 |
+|---|---|---|
+| `{名前}` | `Aさん` | `Aさん、Bさん、ほか2名` |
+| `{数}` | その人の量 | 全員の合計 |
+| `{累計}` | 配信全体のその種別の総数（今回分を含む） | 同左 |
+
+- `nickname` がnullなら「リスナー」。ニックネーム自体に「さん」が含まれていても付け足す（判定しない）。
+- 数値は3桁区切り（`1,000`）にする。
+- 文面は登録時点で150文字以内だが、展開後に200文字を超えた場合は上記のまとめ方で調整する。
+
+#### データの扱い
+- ThanksBufferの `user.id` とニックネームはメモリだけに置き、送信・期限切れで消す。DynamoDBとログには残さない。
+- `{累計}` は `SESSION#{session}` / `SUMMARY` の配信全体の値を使い、個人別の累計は持たない。
+- ログには種別、段の下限、まとめた人数、本文の長さ、結果だけを出す。
+
 ## 7. OAuth設計
 
 - `scripts/start_oauth.py` がstate（最大512バイトのランダム値）を生成し、DynamoDBへ短期TTL付きで保存して認可URLを表示する。PKCEは公式未対応のため使用しない。
@@ -195,7 +267,7 @@ STREAMING
 - OAuth endpointはBasic認証（Client ID/Secret）+ `application/x-www-form-urlencoded`。エラーはRFC 6749の `error` で分岐する（`invalid_grant` は再連携、`invalid_client` は設定不備）。
 - TokenはSSM Standard SecureStringへ分離保存する。access tokenは1時間で失効する。
 - token発行・更新のたびに付与scopeを保存し、Workerは有効な機能をscopeに合わせる（`chat.send` がなければ応答停止、`events.presence` がなければウェルカム無効）。
-- 要求scopeは機能設定から組み立てる。MVPは `events.chat chat.send`。機能を追加するときは追加分だけで同意画面を再表示する。
+- 要求scopeは機能設定から組み立てる。MVPは `events.chat events.like events.donation chat.send`（コマンドとハート・スプーンのお礼）。機能を追加するときは追加分だけで同意画面を再表示する。
 - Fargate Workerは `end.reason=TOKEN_EXPIRED` または401で一度だけrefresh（`grant_type=refresh_token`）する。同時refreshはDynamoDB lockで直列化する。refresh tokenは**ローテーションされる**（既定寿命30日）。更新のたびにレスポンスの新しい `refresh_token` を必ず上書き保存する（保存漏れは次回更新で `400 invalid_grant` を招く）。access tokenは既定1時間（`expires_in=3600`）、期限5分前を目安に先行更新する。
 - revoke/解除時はTaskを先に停止し、`POST /v1/oauth/revoke` 後にSSM token、state、MANAGER登録を削除する。
 
@@ -227,6 +299,8 @@ class SpoonRegionConfig:
 | `OAUTH#SINGLE` | `STATE#{hash}` | state（最大512B）、used | 数分 |
 | `DJ#SINGLE` | `MANAGER#{user_id_hash}` | HOSTが登録したMANAGERの `user.id` | なし（解除・連携解除で削除） |
 | `DJ#SINGLE` | `CHAT_SUSPEND` | 1日上限の429で止めたチャット送信の再開時刻 | 再開時刻 |
+| `DJ#SINGLE` | `THANKS#HEART#{下限:07d}` | ハートのお礼文（文面、下限、更新時刻） | なし（DJの削除・連携解除で削除） |
+| `DJ#SINGLE` | `THANKS#SPOON#{下限:07d}` | スプーンのお礼文（同上） | なし（同上） |
 | `SESSION#{session}` | `META` | status、Task ID、開始/終了、終了reason | 終了後24h |
 | `SESSION#{session}` | `COOLDOWN#{scope}` | 次回送信可能時刻 | 短期 |
 | `SESSION#{session}` | `SUMMARY` | 非個人別集計（ハート総数・スプーン総数） | 24h |
@@ -240,6 +314,7 @@ class SpoonRegionConfig:
 
 - `POST /v1/live/chat` をSSEと同じDJ Token・region resolverで呼び出す。request項目名は公式spec確認後に型へ固定する。
 - 送信前に空・空白のみを拒否し、絵文字等の非BMP文字を2文字と数える保守的な長さ（UTF-16コード単位相当）で200文字以内に収める。
+- 送信キューは2レーンに分ける。**返信レーン**（コマンド返信・登録結果）を優先し、**お礼レーン**（§6.3、15秒に1通）は返信レーンが空のときに送る。お礼の15秒制限は返信レーンに影響しない。
 - 送信は単一の送信キュー（Worker内）を通し、以下の順で速度を制御する。
   1. コマンドscopeごとの5秒cooldown（DynamoDB）
   2. 直近レスポンスの `x-ratelimit-remaining` が0なら `x-ratelimit-replenish-rate` から次の送信可能時刻を計算して待つ
@@ -330,6 +405,7 @@ class SpoonRegionConfig:
 - エラーbodyの `data:` 除去、body空の429、RFC 6749エラー。
 - chat本文の長さ判定（非BMP文字）、空文字拒否、上限ヘッダーによる速度制御、`0302`/`Retry-After`/`0208` の扱い。
 - command/RBAC（`isDj`、MANAGER登録）/cooldown、like集計（`totalAmount`）とdonation集計の単位。
+- お礼: DJ以外のコマンド無視、下限の解釈（`!setspoon 100円…` は文面扱い）、150文字・5段の上限、段の選択、未登録なら送らない、同一 `user.id` の合算、15秒に1通、優先順（特別文 → スプーン → ハート）、200文字への収め込みと「ほかN名」、null nickname、60秒の期限切れ、返信レーンの優先、ニックネームがログに出ないこと。
 - region allowlistとredirect拒否、ログ禁止値の非出力。
 
 ### 統合
@@ -360,6 +436,7 @@ class SpoonRegionConfig:
 | ADR-010 | MANAGERはHOSTがBotの管理コマンドで登録する（Spoonのマネージャー指定とは連動しない） | Proposed |
 | ADR-011 | 入場ウェルカムは既定無効の任意機能（Botのマネージャー指定が必要） | Proposed |
 | ADR-012 | 起動時に配信中でない場合、既定10分待ってTaskを終了する | Proposed |
+| ADR-013 | ハート・スプーンのお礼文はDJがチャットコマンドで登録しDynamoDBに保持する。未登録なら送らない。お礼はBot全体で15秒に1通、送り主をメモリにためて複数人を1通にまとめる | Accepted |
 
 ## 17. 参照資料
 - [`docs/spoon-api-contract.md`](../../../docs/spoon-api-contract.md)（外部仕様の要約、確度付き）

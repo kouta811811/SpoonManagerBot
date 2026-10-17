@@ -15,7 +15,7 @@
 
 - [x] 0.3 最小権限セットを確定する
   - 権限一覧9種類を `docs/spoon-api-contract.md` に記録した。
-  - MVPは `events.chat chat.send`。入場ウェルカムは `events.presence dj.follow`、ハート・ギフトは `events.like` / `events.donation` を追加同意する。
+  - MVPは `events.chat events.like events.donation chat.send`（コマンドとハート・スプーンのお礼）。入場ウェルカムは `events.presence dj.follow` を追加同意する。
   - [ ] 残り: Developer Appへの登録値とDJ同意要求を一致させる（0.1と合わせて実施）。
   - 対応: R1, R4, R7
 
@@ -28,9 +28,10 @@
   - 対応: R5, R7
 
 - [ ] 0.6 ユーザー機能仕様を承認する
-  - command catalog、MANAGER登録コマンドの書式、welcome/heart/donation応答を確定する。
-  - ADR-010〜012（MANAGER方式、ウェルカム任意化、配信待ち10分）を承認する。
-  - 対応: R6, R8
+  - [x] ハート・スプーンのお礼を確定した（要件R13、設計§6.3、ADR-013）。DJがチャットコマンドで文面を登録、未登録なら送らない、FREEハートも対象、Bot全体で15秒に1通、複数人まとめ送信。
+  - [ ] 残り: command catalog（`help` / `song` / `dice` 等）、MANAGER登録コマンドの書式、入場ウェルカムの文面・頻度。
+  - [ ] 残り: ADR-010〜012（MANAGER方式、ウェルカム任意化、配信待ち10分）を承認する。
+  - 対応: R6, R8, R13
 
 - [ ] 0.7 コスト見積りと運用手順を承認する
   - 東京regionのFargate 0.25vCPU/0.5GB、public IPv4、ログ等を配信時間別に見積る。
@@ -125,12 +126,25 @@
   - 対応: R6
 
 - [ ] 5.4 presence/like/donation handlerを実装する
-  - 任意のウェルカム（同一配信で一度）、`totalAmount` によるハート集計と `PAID` への応答、`amount` によるギフト集計とお礼を実装する。
+  - 任意のウェルカム（同一配信で一度）、`totalAmount` によるハート集計、`amount` によるスプーン集計（配信全体の `SUMMARY`）を実装する。
+  - like/donation を ThanksBuffer へ渡す。
   - 対応: R8, R10
 
-- [ ] 5.5 event/commandの自動テストを作成する
+- [ ] 5.5 お礼文の登録コマンドを実装する
+  - `!setheart` / `!setspoon` / `!delheart` / `!delspoon` / `!msglist` をDJ（`isDj`）だけに許可する。
+  - 下限の解釈、150文字・5段の上限、上書き、登録結果の返信、DynamoDB `THANKS#...` の読み書きを実装する。
+  - 対応: R13, R10
+
+- [ ] 5.6 お礼の送信を実装する
+  - ThanksBuffer（メモリ、`user.id` 単位で合算、60秒の期限、特別文は最大5件）と、15秒に1通のThanksSchedulerを実装する。
+  - 段の選択、優先順（特別文 → スプーン → ハート）、変数展開（`{名前}` に「さん」付与、`{数}`、`{累計}`）、200文字への収め込みと「ほかN名」、null nickname を実装する。
+  - 権限（`chat.send` / `events.like` / `events.donation`）がない種別を無効にする。
+  - 対応: R13, R7, R10
+
+- [ ] 5.7 event/command/お礼の自動テストを作成する
   - 公式サンプルpayload、nullable項目、未知event、JSON風message、全command×role、集計の単位を検証する。
-  - 対応: R5, R6, R8
+  - お礼: DJ以外の無視、下限の解釈、未登録なら送らない、合算、15秒制限、優先順、200文字・「ほかN名」、期限切れ、返信レーン優先、ニックネームがログ・DBに残らないことを検証する。
+  - 対応: R5, R6, R8, R13
 
 ## フェーズ6: Chat API
 
@@ -139,6 +153,7 @@
   - 対応: R7
 
 - [ ] 6.2 送信キューとレート制御を実装する
+  - 返信レーン（優先）とお礼レーンの2レーンを実装する。お礼は失敗しても再送しない。
   - 5秒cooldown、`x-ratelimit-*` ヘッダーによる事前の速度調整、`OAPI_MNGR_0302` の限定再送、1日上限（`Retry-After`）による `CHAT_SUSPEND`、403 `0208` の一時停止を実装する。
   - 本文の空チェックと、非BMP文字を2文字と数える200文字判定を実装する。
   - 対応: R7
@@ -198,14 +213,15 @@
 | R2 OAuth | 0.2, 2.1, 2.2, 2.4, 7.3 |
 | R3 起動・停止 | 0.7, 1.3, 3.1〜3.3 |
 | R4 SSE | 0.4, 4.1〜4.4 |
-| R5 イベント検証 | 0.4, 0.5, 4.2, 5.1, 5.2, 5.5 |
-| R6 Command/RBAC | 0.6, 5.3, 5.5 |
-| R7 Chat | 0.3, 0.5, 6.1〜6.3 |
-| R8 Event処理 | 0.4, 0.6, 5.1, 5.4, 5.5 |
+| R5 イベント検証 | 0.4, 0.5, 4.2, 5.1, 5.2, 5.7 |
+| R6 Command/RBAC | 0.6, 5.3, 5.7 |
+| R7 Chat | 0.3, 0.5, 5.6, 6.1〜6.3 |
+| R8 Event処理 | 0.4, 0.6, 5.1, 5.4, 5.7 |
 | R9 Listener notice | 0.1, 7.4 |
-| R10 Data | 3.2, 5.2, 5.4, 7.1, 7.3 |
+| R10 Data | 3.2, 5.2, 5.4〜5.6, 7.1, 7.3 |
 | R11 Observability | 0.7, 3.2, 6.3, 7.1〜7.3 |
 | R12 Deploy/approval | 0.7, 1.3, 1.4, 8.1, 8.4, 8.5 |
+| R13 お礼メッセージ | 0.6, 5.5〜5.7, 6.2 |
 
 ## 実装開始ゲート
 - [ ] フェーズ0の公式契約・ユーザー仕様・コスト見積りが完了している。
