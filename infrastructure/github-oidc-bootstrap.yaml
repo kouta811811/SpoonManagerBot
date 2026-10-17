@@ -206,7 +206,6 @@ Resources:
               - ecr:DeleteRepositoryPolicy
               - ecr:PutImageScanningConfiguration
               - ecr:PutImageTagMutability
-              - ecr:PutEncryptionConfiguration
               - ecr:TagResource
               - ecr:UntagResource
               - ecr:ListTagsForResource
@@ -259,8 +258,6 @@ Resources:
               - apigateway:PUT
               - apigateway:PATCH
               - apigateway:DELETE
-              - apigateway:TagResource
-              - apigateway:UntagResource
             Resource:
               - !Sub 'arn:${AWS::Partition}:apigateway:*::/apis'
               - !Sub 'arn:${AWS::Partition}:apigateway:*::/apis/*'
