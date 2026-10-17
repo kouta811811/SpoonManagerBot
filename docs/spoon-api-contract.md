@@ -91,7 +91,7 @@ OAuth endpointのエラーはRFC 6749 §5.2形式（`error` / `error_description
 - 発行されたトークンのscopeはその時点のDJの同意に基づく。**トークンの更新のたびにscopeを確認する。**
 - `events.*` の4権限は1つの接続を共有する（§4.1）。
 
-MVPの要求scope: `events.chat chat.send`。入場ウェルカムを有効にする場合は `events.presence dj.follow`、ハート・ギフト機能を有効にする場合は `events.like` / `events.donation` を追加で要求する（同意は積み重なるため、後から追加できる）。
+MVPの要求scope: `events.chat events.like events.donation chat.send`（コマンドとハート・スプーンのお礼。要件R13）。入場ウェルカムを有効にする場合は `events.presence dj.follow` を追加で要求する（同意は積み重なるため、後から追加できる）。
 
 ## 4. イベントストリーム `GET /v1/live/events`（確認済み）
 
