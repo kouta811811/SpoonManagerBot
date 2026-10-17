@@ -69,7 +69,11 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${GitHubEnvironment}'
+              StringLike:
+                # Owner/repo carry a numeric id suffix in this hosted runner's
+                # OIDC subject (e.g. owner@123/repo@456), so match the stable
+                # prefix/suffix and require the exact environment segment.
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}*/${GitHubRepo}*:environment:${GitHubEnvironment}'
       Tags:
         - Key: Project
           Value: !Ref ProjectName
